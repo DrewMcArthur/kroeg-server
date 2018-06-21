@@ -1,0 +1,21 @@
+[package]
+name = "kroeg"
+version = "0.1.0"
+authors = ["Puck Meerburg <puck@puckipedia.com>"]
+
+[dependencies]
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+jsonld = { path = "../jsonld-rs" }
+kroeg-cellar = { path = "../cellar" }
+kroeg-tap = { path = "../tap/tap" }
+kroeg-tap-activitypub = { path = "../tap/activitypub" }
+hyper = "0.12"
+futures-await = "0.1"
+diesel = { version = "~1.2", features = ["postgres"] }
+dotenv = "0.9.0"
+toml = "0.4"
+hyper-tls = "0.2"
+chashmap = "2.2.0"
+lazy_static = "1.0"

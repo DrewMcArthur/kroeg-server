@@ -1,0 +1,7 @@
+{
+  "@context": {
+    "kroeg": "https://puckipedia.com/kroeg/ns#",
+
+    "NotFound": "kroeg:NotFound"
+  }
+}
