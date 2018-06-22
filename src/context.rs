@@ -21,7 +21,7 @@ pub fn extra_context() -> Response<Body> {
 pub fn get_context(context: &Context) -> Value {
     Value::Array(vec![
         Value::String("https://www.w3.org/ns/activitystreams".to_owned()),
-        Value::String(format!("{}/_/context", context.server_base)),
+        Value::String(format!("{}/-/context", context.server_base)),
     ])
 }
 

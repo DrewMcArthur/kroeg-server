@@ -9,4 +9,5 @@ pub struct Config {
 pub struct ServerConfig {
     pub base_uri: String,
     pub instance_id: u32,
+    pub admins: Vec<String>,
 }

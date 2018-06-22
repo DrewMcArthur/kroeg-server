@@ -4,3 +4,4 @@ database = "postgres://localhost/kroegrs"
 [server]
 base_uri = "http://127.0.0.1:3000"
 instance_id = 1
+admins = ["http://127.0.0.1:3000/admin"]

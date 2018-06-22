@@ -140,7 +140,7 @@ fn process_request<T: EntityStore>(
         Future<Item = (T, Response<serde_json::Value>), Error = ServerError<T>> + Send,
     > = match *req.method() {
         Method::GET => {
-            if req.uri().path() == "/_/context" {
+            if req.uri().path() == "/-/context" {
                 return Box::new(future::ok((store, context::extra_context())));
             }
             Box::new(get::process(context.clone(), store, req))
@@ -159,7 +159,6 @@ fn process_request<T: EntityStore>(
     };
 
     Box::new(future.and_then(|(store, res)| {
-        println!("{:?}", res);
         compact_result(context, res).map(move |(_, res)| (store, res))
     }))
 }
