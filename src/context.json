@@ -2,6 +2,7 @@
   "@context": {
     "kroeg": "https://puckipedia.com/kroeg/ns#",
 
-    "NotFound": "kroeg:NotFound"
+    "NotFound": "kroeg:NotFound",
+    "as:Public": null
   }
 }

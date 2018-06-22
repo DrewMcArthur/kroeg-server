@@ -68,13 +68,19 @@ fn run_handlers<T: EntityStore>(
     await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
         .map_err(ServerError::StoreError)?;
 
-    let item = await!(store.get(id))
+    let item = await!(store.get(id.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
     let (_, store, val) =
         await!(assemble(item, 0, Some(store), HashSet::new())).map_err(ServerError::StoreError)?;
 
-    Ok((store.unwrap(), Response::new(val)))
+    Ok((store.unwrap(),
+    Response::builder()
+        .status(201)
+        .header("Location", &id as &str)
+        .header("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"")
+        .body(val)
+        .unwrap()))
 }
 
 #[async]
@@ -122,7 +128,8 @@ pub fn process<T: EntityStore>(
         )
         .and_then(|expanded| {
             let untangled = untangle(expanded);
-            assign_ids(context, store, None, untangled.unwrap()).map_err(ServerError::StoreError)
+            let user = Some(context.user.subject.to_owned());
+            assign_ids(context, store, user, untangled.unwrap()).map_err(ServerError::StoreError)
         })
         .and_then(|(context, store, roots, data)| {
             store_all(store, data)

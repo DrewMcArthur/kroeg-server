@@ -31,17 +31,17 @@ pub fn process<T: EntityStore>(
         None => None,
     };
 
-    match val {
-        Some(data) => Ok((store, Response::new(data))),
-        None => Ok((
-            store,
-            Response::builder()
-                .status(404)
-                .body(json!({
+    let mut builder = Response::builder();
+
+    builder.header("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"");
+
+    let response = match val {
+        Some(data) => builder.status(200).body(data),
+        None => builder.status(404).body(json!({
                     "@type": "https://puckipedia.com/kroeg/ns#NotFound", 
                     as2!(content): "Not found"
-                }))
-                .unwrap(),
-        )),
-    }
+                })),
+    }.unwrap();
+
+    Ok((store, response))
 }
