@@ -33,6 +33,6 @@ pub fn user_from_request<T>(config: &config::Config, req: &Request<T>) -> User {
             subject: "anonymous".to_owned(),
             audience: vec![],
             token_identifier: "anon".to_owned(),
-        }
+        },
     }
 }

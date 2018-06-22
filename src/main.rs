@@ -158,9 +158,11 @@ fn process_request<T: EntityStore>(
         }
     };
 
-    Box::new(future.and_then(|(store, res)| {
-        compact_result(context, res).map(move |(_, res)| (store, res))
-    }))
+    Box::new(
+        future.and_then(|(store, res)| {
+            compact_result(context, res).map(move |(_, res)| (store, res))
+        }),
+    )
 }
 
 #[derive(Clone)]

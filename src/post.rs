@@ -65,7 +65,8 @@ fn run_handlers<T: EntityStore>(
         handlers::CreateActorHandler
     };
 
-    await!(store.insert_collection(inbox.to_owned(), id.to_owned())).map_err(ServerError::StoreError)?;
+    await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
+        .map_err(ServerError::StoreError)?;
 
     let item = await!(store.get(id))
         .map_err(ServerError::StoreError)?

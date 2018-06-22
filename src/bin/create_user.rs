@@ -30,9 +30,9 @@ use jsonld::nodemap::Pointer;
 use kroeg_cellar::QuadClient;
 use kroeg_tap::EntityStore;
 
+use kroeg_tap::untangle;
 use std::fs::File;
 use std::io::Read;
-use kroeg_tap::untangle;
 
 use futures::future;
 use futures::prelude::*;
@@ -47,7 +47,12 @@ fn read_config() -> config::Config {
 }
 
 #[async]
-fn create_user<T: EntityStore + 'static>(mut store: T, id: String, name: String, username: String) -> Result<(), T::Error> {
+fn create_user<T: EntityStore + 'static>(
+    mut store: T,
+    id: String,
+    name: String,
+    username: String,
+) -> Result<(), T::Error> {
     let inbox_id = format!("{}/inbox", id);
     let outbox_id = format!("{}/outbox", id);
 
@@ -63,8 +68,18 @@ fn create_user<T: EntityStore + 'static>(mut store: T, id: String, name: String,
     );
 
     let mut untangled = untangle(user).unwrap();
-    untangled.get_mut(&inbox_id).unwrap().meta().get_mut(kroeg!(box)).push(Pointer::Id(ldp!(inbox).to_owned()));
-    untangled.get_mut(&outbox_id).unwrap().meta().get_mut(kroeg!(box)).push(Pointer::Id(as2!(outbox).to_owned()));
+    untangled
+        .get_mut(&inbox_id)
+        .unwrap()
+        .meta()
+        .get_mut(kroeg!(box))
+        .push(Pointer::Id(ldp!(inbox).to_owned()));
+    untangled
+        .get_mut(&outbox_id)
+        .unwrap()
+        .meta()
+        .get_mut(kroeg!(box))
+        .push(Pointer::Id(as2!(outbox).to_owned()));
     for (key, value) in untangled {
         await!(store.put(key, value))?;
     }
