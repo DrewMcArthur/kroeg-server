@@ -53,6 +53,13 @@ pub fn process<T: EntityStore>(
         }
     } else {
         await!(store.get(name.to_owned())).map_err(|e| ServerError::StoreError(e))?
+            .map(|mut entity| {
+                if entity.main().types.contains(&as2!(OrderedCollection).to_string()) {
+                    entity.main_mut()[as2!(first)].push(Pointer::Id(format!("{}?first", name)));
+                }
+
+                entity
+            })
     };
 
     let val = match val {
