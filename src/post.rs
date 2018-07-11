@@ -24,17 +24,17 @@ macro_rules! run_handlers {
         let mut context = $context;
         let mut store = $store;
         let inbox = $inbox;
-        let id = $id;
+        let mut id = $id;
         $({
             let item = $exp;
-            let (ncontext, nstore) = await!(item.handle(context, store, inbox.to_owned(), id.to_owned()))
+            let (ncontext, nstore, nid) = await!(item.handle(context, store, inbox.to_owned(), id))
                 .map_err(|e| ServerError::HandlerError(Box::new(e)))?;
-
+            id = nid;
             context = ncontext;
             store = nstore;
         })*
 
-        (context, store)
+        (context, store, id)
         }
     };
 }
@@ -59,8 +59,9 @@ fn run_handlers<T: EntityStore>(
         None => return Err(ServerError::PostToNonbox),
     }
 
-    let (_, mut store) = run_handlers! {
-        context, store, inbox.to_owned(), id.to_owned(),
+    let (_, mut store, id) = run_handlers! {
+        context, store, inbox.to_owned(), id,
+        handlers::AutomaticCreateHandler,
         handlers::VerifyRequiredEventsHandler,
         handlers::CreateActorHandler
     };
