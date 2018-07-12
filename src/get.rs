@@ -18,10 +18,12 @@ pub fn process<T: EntityStore>(
 ) -> Result<(T, Response<Value>), ServerError<T>> {
     let uri = req.uri().to_owned();
     let mut name = format!("{}{}", context.server_base, uri.path());
+    println!("-- GET {}", name);
     let query = uri.query().map(|f| f.to_string());
     let val = if let Some(query) = query {
         let val = await!(store.get(name.to_owned())).map_err(ServerError::StoreError)?;
         if let Some(val) = val {
+            println!("  -- query '{}'", query);
             if !val.main().types.contains(&as2!(OrderedCollection).to_string()) {
                 None
             } else {

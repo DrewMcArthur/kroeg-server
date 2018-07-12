@@ -104,6 +104,8 @@ pub fn process<T: EntityStore>(
     let uri = req.uri().to_owned();
     let name = format!("{}{}", context.server_base, uri.path());
 
+    println!("-- POST {}", name);
+
     let body = req.into_body();
     body.concat2()
         .map_err(|e| ServerError::HyperError(e))
