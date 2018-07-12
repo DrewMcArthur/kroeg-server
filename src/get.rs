@@ -3,8 +3,8 @@
 use futures::prelude::*;
 
 use hyper::{Body, Request, Response};
-use kroeg_tap::{assemble, Context, EntityStore, StoreItem, Authorizer, DefaultAuthorizer};
 use jsonld::nodemap::Pointer;
+use kroeg_tap::{assemble, Authorizer, Context, DefaultAuthorizer, EntityStore, StoreItem};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -24,21 +24,35 @@ pub fn process<T: EntityStore>(
         let val = await!(store.get(name.to_owned())).map_err(ServerError::StoreError)?;
         if let Some(val) = val {
             println!("  -- query '{}'", query);
-            if !val.main().types.contains(&as2!(OrderedCollection).to_string()) {
+            if !val
+                .main()
+                .types
+                .contains(&as2!(OrderedCollection).to_string())
+            {
                 None
             } else {
-                let data = await!(store.read_collection(name.to_owned(), None, if query == "first" { None } else { Some(query.to_owned()) }))
-                    .map_err(ServerError::StoreError)?;
+                let data = await!(store.read_collection(
+                    name.to_owned(),
+                    None,
+                    if query == "first" {
+                        None
+                    } else {
+                        Some(query.to_owned())
+                    }
+                )).map_err(ServerError::StoreError)?;
 
                 let withquery = format!("{}{}?{}", context.server_base, uri.path(), query);
 
-                let items: Vec<_> = data.items.iter().map(|f| json!({"@id": f})).collect();
-                let mut elem = StoreItem::parse(&withquery, json!({
+                let items: Vec<_> = data.items.iter().map(|f| json!({ "@id": f })).collect();
+                let mut elem = StoreItem::parse(
+                    &withquery,
+                    json!({
                     "@id": withquery,
                     "@type": [as2!(OrderedCollectionPage)],
                     as2!(partOf): [{"@id": name}],
                     as2!(items): [{"@list": items}]
-                })).expect("static input cannot fail");
+                }),
+                ).expect("static input cannot fail");
 
                 if let Some(cursor) = data.before {
                     elem.main_mut()[as2!(prev)].push(Pointer::Id(format!("{}?{}", name, cursor)));
@@ -54,9 +68,14 @@ pub fn process<T: EntityStore>(
             None
         }
     } else {
-        await!(store.get(name.to_owned())).map_err(|e| ServerError::StoreError(e))?
+        await!(store.get(name.to_owned()))
+            .map_err(|e| ServerError::StoreError(e))?
             .map(|mut entity| {
-                if entity.main().types.contains(&as2!(OrderedCollection).to_string()) {
+                if entity
+                    .main()
+                    .types
+                    .contains(&as2!(OrderedCollection).to_string())
+                {
                     entity.main_mut()[as2!(first)].push(Pointer::Id(format!("{}?first", name)));
                 }
 
@@ -67,7 +86,8 @@ pub fn process<T: EntityStore>(
     let val = match val {
         Some(data) => {
             let auth = DefaultAuthorizer::new(&context);
-            let (nstore, can_show) = await!(auth.can_show(store, &data)).map_err(ServerError::StoreError)?;
+            let (nstore, can_show) =
+                await!(auth.can_show(store, &data)).map_err(ServerError::StoreError)?;
             store = nstore;
 
             if !can_show {
@@ -75,15 +95,20 @@ pub fn process<T: EntityStore>(
             } else {
                 Some(data)
             }
-        },
+        }
 
-        None => None
+        None => None,
     };
 
     let val = match val {
         Some(data) => {
-            let (_, nstore, _, data) = await!(assemble(data, 0, Some(store), DefaultAuthorizer::new(&context), HashSet::new()))
-                .map_err(ServerError::StoreError)?;
+            let (_, nstore, _, data) = await!(assemble(
+                data,
+                0,
+                Some(store),
+                DefaultAuthorizer::new(&context),
+                HashSet::new()
+            )).map_err(ServerError::StoreError)?;
             store = nstore.unwrap();
             Some(data)
         }
@@ -92,7 +117,10 @@ pub fn process<T: EntityStore>(
 
     let mut builder = Response::builder();
 
-    builder.header("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"");
+    builder.header(
+        "Content-Type",
+        "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+    );
 
     let response = match val {
         Some(data) => builder.status(200).body(data),

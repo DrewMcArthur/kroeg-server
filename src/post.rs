@@ -11,7 +11,7 @@ use super::context::HyperContextLoader;
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
 
-use kroeg_tap::{assemble, assign_ids, untangle, MessageHandler, DefaultAuthorizer};
+use kroeg_tap::{assemble, assign_ids, untangle, DefaultAuthorizer, MessageHandler};
 use kroeg_tap_activitypub::handlers;
 
 use std::collections::{HashMap, HashSet};
@@ -72,16 +72,26 @@ fn run_handlers<T: EntityStore>(
     let item = await!(store.get(id.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
-    let (_, store, _, val) =
-        await!(assemble(item, 0, Some(store), DefaultAuthorizer::new(&context), HashSet::new())).map_err(ServerError::StoreError)?;
+    let (_, store, _, val) = await!(assemble(
+        item,
+        0,
+        Some(store),
+        DefaultAuthorizer::new(&context),
+        HashSet::new()
+    )).map_err(ServerError::StoreError)?;
 
-    Ok((store.unwrap(),
-    Response::builder()
-        .status(201)
-        .header("Location", &id as &str)
-        .header("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"")
-        .body(val)
-        .unwrap()))
+    Ok((
+        store.unwrap(),
+        Response::builder()
+            .status(201)
+            .header("Location", &id as &str)
+            .header(
+                "Content-Type",
+                "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+            )
+            .body(val)
+            .unwrap(),
+    ))
 }
 
 #[async]
