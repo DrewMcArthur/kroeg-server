@@ -11,7 +11,7 @@ use super::context::HyperContextLoader;
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
 
-use kroeg_tap::{assemble, assign_ids, untangle, MessageHandler};
+use kroeg_tap::{assemble, assign_ids, untangle, MessageHandler, DefaultAuthorizer};
 use kroeg_tap_activitypub::handlers;
 
 use std::collections::{HashMap, HashSet};
@@ -59,7 +59,7 @@ fn run_handlers<T: EntityStore>(
         None => return Err(ServerError::PostToNonbox),
     }
 
-    let (_, mut store, id) = run_handlers! {
+    let (context, mut store, id) = run_handlers! {
         context, store, inbox.to_owned(), id,
         handlers::AutomaticCreateHandler,
         handlers::VerifyRequiredEventsHandler,
@@ -72,8 +72,8 @@ fn run_handlers<T: EntityStore>(
     let item = await!(store.get(id.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
-    let (_, store, val) =
-        await!(assemble(item, 0, Some(store), HashSet::new())).map_err(ServerError::StoreError)?;
+    let (_, store, _, val) =
+        await!(assemble(item, 0, Some(store), DefaultAuthorizer::new(&context), HashSet::new())).map_err(ServerError::StoreError)?;
 
     Ok((store.unwrap(),
     Response::builder()

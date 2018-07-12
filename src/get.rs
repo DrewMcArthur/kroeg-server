@@ -3,7 +3,7 @@
 use futures::prelude::*;
 
 use hyper::{Body, Request, Response};
-use kroeg_tap::{assemble, Context, EntityStore, StoreItem};
+use kroeg_tap::{assemble, Context, EntityStore, StoreItem, Authorizer, DefaultAuthorizer};
 use jsonld::nodemap::Pointer;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -66,7 +66,23 @@ pub fn process<T: EntityStore>(
 
     let val = match val {
         Some(data) => {
-            let (_, nstore, data) = await!(assemble(data, 0, Some(store), HashSet::new()))
+            let auth = DefaultAuthorizer::new(&context);
+            let (nstore, can_show) = await!(auth.can_show(store, &data)).map_err(ServerError::StoreError)?;
+            store = nstore;
+
+            if !can_show {
+                None
+            } else {
+                Some(data)
+            }
+        },
+
+        None => None
+    };
+
+    let val = match val {
+        Some(data) => {
+            let (_, nstore, _, data) = await!(assemble(data, 0, Some(store), DefaultAuthorizer::new(&context), HashSet::new()))
                 .map_err(ServerError::StoreError)?;
             store = nstore.unwrap();
             Some(data)
