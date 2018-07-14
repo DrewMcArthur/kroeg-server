@@ -63,7 +63,10 @@ fn run_handlers<T: EntityStore>(
         context, store, inbox.to_owned(), id,
         handlers::AutomaticCreateHandler,
         handlers::VerifyRequiredEventsHandler,
-        handlers::CreateActorHandler
+        handlers::ClientCreateHandler,
+        handlers::CreateActorHandler,
+        handlers::ClientLikeHandler,
+        handlers::ClientUndoHandler
     };
 
     await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
@@ -114,7 +117,7 @@ pub fn process<T: EntityStore>(
     let uri = req.uri().to_owned();
     let name = format!("{}{}", context.server_base, uri.path());
 
-    println!("-- POST {}", name);
+    println!(" ┗ POST {}", name);
 
     let body = req.into_body();
     body.concat2()

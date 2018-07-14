@@ -54,7 +54,7 @@ impl RemoteContextLoader for HyperContextLoader {
                 .request(request)
                 .and_then(|res| res.into_body().concat2())
                 .map(move |val| {
-                    eprintln!("-- loaded context {}", url);
+                    eprintln!(" ┃ loaded context {}", url);
                     let res: Value = from_slice(val.as_ref()).unwrap();
                     CONTEXT_MAP.insert(url, res.to_owned());
                     res

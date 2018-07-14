@@ -19,12 +19,16 @@ extern crate dotenv;
 extern crate kroeg_cellar;
 #[macro_use]
 extern crate kroeg_tap;
+extern crate base64;
+extern crate http;
 extern crate kroeg_tap_activitypub;
+extern crate openssl;
 
 mod authentication;
 mod config;
 mod context;
 mod get;
+mod jwt;
 mod post;
 
 use authentication::user_from_request;
@@ -49,13 +53,29 @@ use hyper::{Body, Method, Request, Response, Server, StatusCode};
 
 static MSG_INVALID_METHOD: &'static [u8] = b"Invalid method";
 
-pub fn context_from_config<T>(config: &config::Config, req: &Request<T>) -> Context {
-    Context {
-        server_base: config.server.base_uri.to_owned(),
-        instance_id: config.server.instance_id,
+use http::request::Parts;
 
-        user: user_from_request(config, req),
-    }
+pub fn context_from_config<R: EntityStore>(
+    config: config::Config,
+    req: Parts,
+    store: R,
+) -> impl Future<Item = (config::Config, Parts, R, Context), Error = R::Error> + Send + 'static {
+    let base_uri = config.server.base_uri.to_owned();
+    let instance_id = config.server.instance_id;
+    user_from_request(config, req, store).map(move |(config, request, store, user)| {
+        println!(" ┏ user: {}", user.subject);
+        (
+            config,
+            request,
+            store,
+            Context {
+                server_base: base_uri,
+                instance_id: instance_id,
+
+                user: user,
+            },
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -125,6 +145,7 @@ fn compact_result<T: EntityStore>(
     let (parts, val) = res.into_parts();
     let (context, val) =
         await!(compact_with_context(context, val)).map_err(|e| ServerError::CompactionError(e))?;
+    println!(" ┗ done");
     Ok((
         context,
         Response::from_parts(parts, Body::from(val.to_string())),
@@ -141,6 +162,7 @@ fn process_request<T: EntityStore>(
     > = match *req.method() {
         Method::GET => {
             if req.uri().path() == "/-/context" {
+                println!(" ┗ returning context");
                 return Box::new(future::ok((store, context::extra_context())));
             }
             Box::new(get::process(context.clone(), store, req))
@@ -186,9 +208,14 @@ impl Service for KroegService {
         if in_transaction {
             store.begin_transaction();
         }
+        let (part, body) = req.into_parts();
         Box::new(
-            process_request(context_from_config(&self.config, &req), store, req).then(move |x| {
-                match x {
+            context_from_config(self.config.clone(), part, store)
+                .map_err(ServerError::StoreError)
+                .and_then(move |(_, part, store, context)| {
+                    process_request(context, store, Request::from_parts(part, body))
+                })
+                .then(move |x| match x {
                     Ok((mut store, data)) => {
                         if in_transaction {
                             if data.status().is_success() {
@@ -204,8 +231,7 @@ impl Service for KroegService {
                         .status(500)
                         .body(Body::from(err.to_string()))
                         .unwrap()),
-                }
-            }),
+                }),
         )
     }
 }
