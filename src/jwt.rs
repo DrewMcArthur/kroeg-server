@@ -87,7 +87,7 @@ pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User
     to_sign.push(b'.');
     to_sign.append(&mut spl[1].as_bytes().iter().map(|f| *f).collect());
 
-    verifier.update(&to_sign);
+    verifier.update(&to_sign).unwrap();
     if let Ok(true) = verifier.verify(&signature) {
         Ok((
             store,

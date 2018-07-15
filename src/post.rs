@@ -46,28 +46,29 @@ fn run_handlers<T: EntityStore>(
     inbox: String,
     id: String,
 ) -> Result<(T, Response<Value>), ServerError<T>> {
-    let source = await!(store.get(inbox.to_owned()))
+    let mut source = await!(store.get(inbox.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
-    match source.sub(kroeg!(meta)) {
-        Some(val) => {
-            if !val[kroeg!(box)].contains(&Pointer::Id(as2!(outbox).to_owned())) {
-                return Err(ServerError::PostToNonbox);
+    let (context, mut store, id) =
+        if source.meta()[kroeg!(box)].contains(&Pointer::Id(as2!(outbox).to_owned())) {
+            run_handlers! {
+                context, store, inbox.to_owned(), id,
+                handlers::AutomaticCreateHandler,
+                handlers::VerifyRequiredEventsHandler,
+                handlers::ClientCreateHandler,
+                handlers::CreateActorHandler,
+                handlers::ClientLikeHandler,
+                handlers::ClientUndoHandler
             }
-        }
-
-        None => return Err(ServerError::PostToNonbox),
-    }
-
-    let (context, mut store, id) = run_handlers! {
-        context, store, inbox.to_owned(), id,
-        handlers::AutomaticCreateHandler,
-        handlers::VerifyRequiredEventsHandler,
-        handlers::ClientCreateHandler,
-        handlers::CreateActorHandler,
-        handlers::ClientLikeHandler,
-        handlers::ClientUndoHandler
-    };
+        } else if source.meta()[kroeg!(box)].contains(&Pointer::Id(as2!(inbox).to_owned())) {
+            run_handlers! {
+                context, store, inbox.to_owned(), id,
+                handlers::VerifyRequiredEventsHandler,
+                handlers::ServerCreateHandler
+            }
+        } else {
+            return Err(ServerError::PostToNonbox);
+        };
 
     await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
         .map_err(ServerError::StoreError)?;

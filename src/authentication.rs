@@ -1,15 +1,13 @@
 //! Simple, insecure, authentication method to mock the server for now.
 
 use super::config;
-use hyper::Request;
 use jsonld::nodemap::Pointer;
 use kroeg_tap::{EntityStore, User};
 
-use base64::{decode, encode};
+use base64::decode;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Verifier};
 use serde_json::Value as JValue;
 
-use futures::future;
 use futures::prelude::*;
 use std::collections::HashMap;
 
@@ -23,17 +21,25 @@ pub fn build_header_magic(parts: &Parts, sig: Vec<String>) -> Vec<u8> {
     let mut is_first = true;
     for value in sig {
         if !is_first {
-            write!(result, "\n");
+            let _ = write!(result, "\n");
         }
 
         if value == "(request-target)" {
-            // todo
+            let _ = write!(
+                result,
+                "(request-target): {} {}",
+                parts.method.as_str().to_lowercase(),
+                parts.uri.path()
+            );
+            if let Some(query) = parts.uri.query() {
+                let _ = write!(result, "?{}", query);
+            }
         } else {
-            write!(result, "{}: ", value);
+            let _ = write!(result, "{}: ", value);
             let mut is_first = true;
             for header in parts.headers.get_all(value) {
                 if !is_first {
-                    write!(result, ", ");
+                    let _ = write!(result, ", ");
                 }
 
                 result.append(&mut header.as_bytes().iter().map(|f| *f).collect());
@@ -112,7 +118,7 @@ pub fn verify_http_signature<R: EntityStore>(
                                     &req,
                                     headers.split(' ').map(str::to_string).collect(),
                                 );
-                                verifier.update(&header_magic);
+                                verifier.update(&header_magic).unwrap();
                                 let result = verifier.verify(&signature).unwrap();
                                 if result {
                                     return Ok((
