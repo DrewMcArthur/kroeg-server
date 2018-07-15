@@ -257,7 +257,7 @@ impl NewService for KroegServiceBuilder {
 
 fn read_config() -> config::Config {
     let config_url = dotenv::var("CONFIG").unwrap_or("server.toml".to_owned());
-    let mut file = File::open(&config_url).expect("Server config file not found!");
+    let mut file = File::open(&config_url).expect("Server config file not found!\nPlease set the config in server.toml or set the CONFIG environment variable!");
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).expect("Failed to read file!");
 
