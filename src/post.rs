@@ -3,7 +3,7 @@
 use futures::future;
 use futures::prelude::*;
 
-use hyper::{Body, Request, Response};
+use hyper::{Body, Request, Response, Uri};
 use kroeg_tap::{Context, EntityStore, StoreItem};
 use serde_json::{from_slice, Value};
 
@@ -44,31 +44,50 @@ fn run_handlers<T: EntityStore>(
     context: Context,
     store: T,
     inbox: String,
-    id: String,
+    expanded: Value,
 ) -> Result<(T, Response<Value>), ServerError<T>> {
+    let root = expanded.as_object().unwrap()["@id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut untangled = untangle(expanded).unwrap();
+    let user = Some(context.user.subject.to_owned());
     let mut source = await!(store.get(inbox.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
-    let (context, mut store, id) =
-        if source.meta()[kroeg!(box)].contains(&Pointer::Id(as2!(outbox).to_owned())) {
-            run_handlers! {
-                context, store, inbox.to_owned(), id,
-                handlers::AutomaticCreateHandler,
-                handlers::VerifyRequiredEventsHandler,
-                handlers::ClientCreateHandler,
-                handlers::CreateActorHandler,
-                handlers::ClientLikeHandler,
-                handlers::ClientUndoHandler
-            }
-        } else if source.meta()[kroeg!(box)].contains(&Pointer::Id(as2!(inbox).to_owned())) {
-            run_handlers! {
-                context, store, inbox.to_owned(), id,
-                handlers::VerifyRequiredEventsHandler,
-                handlers::ServerCreateHandler
-            }
-        } else {
-            return Err(ServerError::PostToNonbox);
+    let (context, mut store, id) = if source.meta()[kroeg!(box)]
+        .contains(&Pointer::Id(as2!(outbox).to_owned()))
+    {
+        let (context, store, mut roots, data) =
+            await!(assign_ids(context, store, user, untangled)).map_err(ServerError::StoreError)?;
+        let store = await!(store_all(store, data)).map_err(ServerError::StoreError)?;
+        let id = roots.remove(0);
+
+        run_handlers! {
+            context, store, inbox.to_owned(), id,
+            handlers::AutomaticCreateHandler,
+            handlers::VerifyRequiredEventsHandler,
+            handlers::ClientCreateHandler,
+            handlers::CreateActorHandler,
+            handlers::ClientLikeHandler,
+            handlers::ClientUndoHandler
+        }
+    } else if source.meta()[kroeg!(box)].contains(&Pointer::Id(as2!(inbox).to_owned())) {
+        let host = {
+            let host = context.user.subject.parse::<Uri>().unwrap();
+            host.authority_part().unwrap().clone()
         };
+        untangled.retain(|k, v| k.parse::<Uri>().unwrap().authority_part().unwrap() == &host);
+        let store = await!(store_all(store, untangled)).map_err(ServerError::StoreError)?;
+        let id = root;
+        run_handlers! {
+            context, store, inbox.to_owned(), id,
+            handlers::VerifyRequiredEventsHandler,
+            handlers::ServerCreateHandler
+        }
+    } else {
+        return Err(ServerError::PostToNonbox);
+    };
 
     await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
         .map_err(ServerError::StoreError)?;
@@ -143,15 +162,5 @@ pub fn process<T: EntityStore>(
                 )
             },
         )
-        .and_then(|expanded| {
-            let untangled = untangle(expanded);
-            let user = Some(context.user.subject.to_owned());
-            assign_ids(context, store, user, untangled.unwrap()).map_err(ServerError::StoreError)
-        })
-        .and_then(|(context, store, roots, data)| {
-            store_all(store, data)
-                .map(|f| (context, f, roots))
-                .map_err(ServerError::StoreError)
-        })
-        .and_then(|(context, store, mut roots)| run_handlers(context, store, name, roots.remove(0)))
+        .and_then(|expanded| run_handlers(context, store, name, expanded))
 }
