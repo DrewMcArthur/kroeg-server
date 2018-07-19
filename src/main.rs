@@ -23,10 +23,12 @@ extern crate base64;
 extern crate http;
 extern crate kroeg_tap_activitypub;
 extern crate openssl;
+extern crate tokio;
 
 mod authentication;
 mod config;
 mod context;
+mod delivery;
 mod get;
 mod jwt;
 mod post;
@@ -269,12 +271,30 @@ fn main() {
     let config = read_config();
 
     let addr = &config.listen.parse().expect("Invalid listen address!");
-    let server = Server::bind(&addr).serve(KroegServiceBuilder { config: config });
+    let server = Server::bind(&addr).serve(KroegServiceBuilder {
+        config: config.clone(),
+    });
 
     println!("Kroeg v{} starting...", env!("CARGO_PKG_VERSION"));
     println!("listening at {}", addr);
 
-    hyper::rt::run(server.map_err(|e| {
-        eprintln!("Server error: {}", e);
+    hyper::rt::run(hyper::rt::lazy(move || {
+        use delivery::loop_deliver;
+
+        hyper::rt::spawn(server.map_err(|e| {
+            eprintln!("Server error: {}", e);
+        }));
+
+        let db = PgConnection::establish(&config.database)
+            .expect(&format!("Error connecting to {}", config.database));
+        let store = QuadClient::new(db);
+
+        let db = PgConnection::establish(&config.database)
+            .expect(&format!("Error connecting to {}", config.database));
+        let queue = QuadClient::new(db);
+
+        hyper::rt::spawn(loop_deliver(store, queue));
+
+        Ok(())
     }))
 }
