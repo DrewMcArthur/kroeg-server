@@ -23,6 +23,7 @@ extern crate base64;
 extern crate http;
 extern crate kroeg_tap_activitypub;
 extern crate openssl;
+extern crate sha2;
 extern crate tokio;
 
 mod authentication;
@@ -32,13 +33,15 @@ mod delivery;
 mod get;
 mod jwt;
 mod post;
+mod store;
+mod webfinger;
 
 use authentication::user_from_request;
 
 use diesel::prelude::*;
 
 use kroeg_cellar::QuadClient;
-use kroeg_tap::{Context, EntityStore};
+use kroeg_tap::{Context, EntityStore, QueueStore};
 
 use jsonld::error::{CompactionError, ExpansionError};
 use jsonld::{compact, JsonLdOptions};
@@ -50,6 +53,8 @@ use std::fs::File;
 use std::io::Read;
 use std::{error, fmt};
 
+use store::RetrievingEntityStore;
+
 use hyper::service::{NewService, Service};
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 
@@ -57,11 +62,12 @@ static MSG_INVALID_METHOD: &'static [u8] = b"Invalid method";
 
 use http::request::Parts;
 
-pub fn context_from_config<R: EntityStore>(
+pub fn context_from_config<R: EntityStore, Q: QueueStore>(
     config: config::Config,
     req: Parts,
     store: R,
-) -> impl Future<Item = (config::Config, Parts, R, Context), Error = R::Error> + Send + 'static {
+    queue: Q,
+) -> impl Future<Item = (config::Config, Parts, R, Q, Context), Error = R::Error> + Send + 'static {
     let base_uri = config.server.base_uri.to_owned();
     let instance_id = config.server.instance_id;
     user_from_request(config, req, store).map(move |(config, request, store, user)| {
@@ -70,6 +76,7 @@ pub fn context_from_config<R: EntityStore>(
             config,
             request,
             store,
+            queue,
             Context {
                 server_base: base_uri,
                 instance_id: instance_id,
@@ -121,7 +128,7 @@ impl<T: EntityStore> error::Error for ServerError<T> {
 }
 
 #[async]
-fn compact_with_context(
+pub fn compact_with_context(
     context: Context,
     val: serde_json::Value,
 ) -> Result<(Context, serde_json::Value), CompactionError<context::HyperContextLoader>> {
@@ -154,26 +161,34 @@ fn compact_result<T: EntityStore>(
     ))
 }
 
-fn process_request<T: EntityStore>(
+fn process_request<T: EntityStore, R: QueueStore>(
     context: Context,
     store: T,
+    queue: R,
     req: Request<Body>,
-) -> Box<Future<Item = (T, Response<Body>), Error = ServerError<T>> + Send> {
+) -> Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send> {
     let future: Box<
-        Future<Item = (T, Response<serde_json::Value>), Error = ServerError<T>> + Send,
+        Future<Item = (T, R, Response<serde_json::Value>), Error = ServerError<T>> + Send,
     > = match *req.method() {
         Method::GET => {
             if req.uri().path() == "/-/context" {
                 println!(" ┗ returning context");
-                return Box::new(future::ok((store, context::extra_context())));
+                return Box::new(future::ok((store, queue, context::extra_context())));
+            } else if req.uri().path() == "/.well-known/webfinger" {
+                return Box::new(
+                    webfinger::process(context.clone(), store, req)
+                        .map(move |(a, b)| (a, queue, b)),
+                );
+            } else {
+                Box::new(get::process(context.clone(), store, req).map(move |(a, b)| (a, queue, b)))
             }
-            Box::new(get::process(context.clone(), store, req))
         }
-        Method::POST => Box::new(post::process(context.clone(), store, req)),
+        Method::POST => Box::new(post::process(context.clone(), store, queue, req)),
         _ => {
             let body = Body::from(MSG_INVALID_METHOD);
             return Box::new(future::ok((
                 store,
+                queue,
                 Response::builder()
                     .status(StatusCode::METHOD_NOT_ALLOWED)
                     .body(body)
@@ -182,11 +197,9 @@ fn process_request<T: EntityStore>(
         }
     };
 
-    Box::new(
-        future.and_then(|(store, res)| {
-            compact_result(context, res).map(move |(_, res)| (store, res))
-        }),
-    )
+    Box::new(future.and_then(|(store, queue, res)| {
+        compact_result(context, res).map(move |(_, res)| (store, queue, res))
+    }))
 }
 
 #[derive(Clone)]
@@ -198,32 +211,38 @@ impl Service for KroegService {
     type ReqBody = Body;
     type ResBody = Body;
 
-    type Error = ServerError<QuadClient>;
-    type Future =
-        Box<Future<Item = Response<Body>, Error = ServerError<QuadClient>> + std::marker::Send>;
+    type Error = ServerError<RetrievingEntityStore<QuadClient>>;
+    type Future = Box<Future<Item = Response<Body>, Error = Self::Error> + std::marker::Send>;
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let db = PgConnection::establish(&self.config.database)
             .expect(&format!("Error connecting to {}", self.config.database));
         let mut store = QuadClient::new(db);
+        let db = PgConnection::establish(&self.config.database)
+            .expect(&format!("Error connecting to {}", self.config.database));
+        let queue = QuadClient::new(db);
         let in_transaction = *req.method() == Method::POST;
         if in_transaction {
             store.begin_transaction();
         }
         let (part, body) = req.into_parts();
         Box::new(
-            context_from_config(self.config.clone(), part, store)
-                .map_err(ServerError::StoreError)
-                .and_then(move |(_, part, store, context)| {
-                    process_request(context, store, Request::from_parts(part, body))
+            context_from_config(
+                self.config.clone(),
+                part,
+                RetrievingEntityStore::new(store, self.config.server.base_uri.to_owned()),
+                queue,
+            ).map_err(ServerError::StoreError)
+                .and_then(move |(_, part, store, queue, context)| {
+                    process_request(context, store, queue, Request::from_parts(part, body))
                 })
                 .then(move |x| match x {
-                    Ok((mut store, data)) => {
+                    Ok((mut store, queue, data)) => {
                         if in_transaction {
                             if data.status().is_success() {
-                                store.commit_transaction();
+                                store.unwrap().commit_transaction();
                             } else {
-                                store.rollback_transaction();
+                                store.unwrap().rollback_transaction();
                             }
                         }
 
@@ -245,12 +264,12 @@ struct KroegServiceBuilder {
 impl NewService for KroegServiceBuilder {
     type ReqBody = Body;
     type ResBody = Body;
-    type Error = ServerError<QuadClient>;
+    type Error = ServerError<RetrievingEntityStore<QuadClient>>;
     type Service = KroegService;
-    type Future = future::FutureResult<KroegService, ServerError<QuadClient>>;
-    type InitError = ServerError<QuadClient>;
+    type Future = future::FutureResult<KroegService, Self::Error>;
+    type InitError = Self::Error;
 
-    fn new_service(&self) -> future::FutureResult<KroegService, ServerError<QuadClient>> {
+    fn new_service(&self) -> Self::Future {
         future::ok(KroegService {
             config: self.config.clone(),
         })
@@ -293,7 +312,13 @@ fn main() {
             .expect(&format!("Error connecting to {}", config.database));
         let queue = QuadClient::new(db);
 
-        hyper::rt::spawn(loop_deliver(store, queue));
+        let context = Context {
+            server_base: config.server.base_uri.to_owned(),
+            instance_id: config.server.instance_id,
+            user: authentication::anonymous(),
+        };
+
+        hyper::rt::spawn(loop_deliver(context, store, queue));
 
         Ok(())
     }))

@@ -64,7 +64,6 @@ pub fn verify_http_signature<R: EntityStore>(
         .get("Signature")
         .and_then(|f| f.to_str().ok().map(str::to_string))
     {
-        println!("signature: {}", val);
         let values: Vec<_> = val.split(',').map(str::to_string).collect();
         let mut map = HashMap::new();
         for value in values {
@@ -73,8 +72,6 @@ pub fn verify_http_signature<R: EntityStore>(
             let value = value.trim_matches('"').to_owned();
             map.insert(name, value);
         }
-
-        println!("{:?}", map);
 
         match (
             map.get("keyId").cloned(),
@@ -102,7 +99,6 @@ pub fn verify_http_signature<R: EntityStore>(
                         .and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok());
 
                     if let Some(key) = pem_data {
-                        println!("{:?}", key);
                         let key = PKey::from_rsa(key).unwrap();
                         let signature = decode(signature.as_bytes()).unwrap(); // i know, bad
                         let owner = match key_data.main()[sec!(owner)].iter().next() {
@@ -146,6 +142,16 @@ pub fn verify_http_signature<R: EntityStore>(
     }
 
     Ok((req, store, None))
+}
+
+pub fn anonymous() -> User {
+    User {
+        claims: HashMap::new(),
+        issuer: None,
+        subject: "anonymous".to_owned(),
+        audience: vec![],
+        token_identifier: "anon".to_owned(),
+    }
 }
 
 #[async]
@@ -195,13 +201,7 @@ pub fn user_from_request<R: EntityStore>(
         store,
         match data {
             Some(data) => data,
-            None => User {
-                claims: HashMap::new(),
-                issuer: None,
-                subject: "anonymous".to_owned(),
-                audience: vec![],
-                token_identifier: "anon".to_owned(),
-            },
+            None => anonymous(),
         },
     ))).map(move |(req, store, user)| (config, req, store, user))
 }

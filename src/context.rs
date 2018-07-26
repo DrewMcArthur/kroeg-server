@@ -41,6 +41,12 @@ impl RemoteContextLoader for HyperContextLoader {
             return Box::new(future::ok(val.clone()));
         }
 
+        let url = if url == "https://w3id.org/security/v1" {
+            "https://web-payments.org/contexts/security-v1.jsonld".to_owned()
+        } else {
+            url
+        };
+
         let request = Request::get(url.to_owned())
             .header("Accept", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/activity+json, application/json")
             .body(Body::default())
@@ -54,8 +60,9 @@ impl RemoteContextLoader for HyperContextLoader {
                 .request(request)
                 .and_then(|res| res.into_body().concat2())
                 .map(move |val| {
+                    let res: Value =
+                        from_slice(val.as_ref()).expect("Failed to parse context as JSON");
                     eprintln!(" ┃ loaded context {}", url);
-                    let res: Value = from_slice(val.as_ref()).unwrap();
                     CONTEXT_MAP.insert(url, res.to_owned());
                     res
                 }),

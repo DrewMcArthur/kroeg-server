@@ -11,8 +11,10 @@ use super::context::HyperContextLoader;
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
 
-use kroeg_tap::{assemble, assign_ids, untangle, DefaultAuthorizer, MessageHandler};
+use kroeg_tap::{assemble, assign_ids, untangle, DefaultAuthorizer, MessageHandler, QueueStore};
 use kroeg_tap_activitypub::handlers;
+
+use super::delivery::register_delivery;
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,25 +41,70 @@ macro_rules! run_handlers {
     };
 }
 
+#[async]
+fn audience_for_object<T: EntityStore>(
+    context: Context,
+    obj: StoreItem,
+    store: T,
+) -> Result<(Context, StoreItem, T, HashSet<String>), T::Error> {
+    let mut boxes = HashSet::new();
+    let mut audience = Vec::new();
+    for vals in &[as2!(to), as2!(bto), as2!(cc), as2!(bcc), as2!(audience)] {
+        for item in &obj.main()[vals] {
+            if let Pointer::Id(id) = item {
+                audience.push((0, id.to_owned()));
+            }
+        }
+    }
+
+    while audience.len() > 0 {
+        let (depth, item) = audience.remove(0);
+        let item = await!(store.get(item))?;
+        if let Some(item) = item {
+            if !item.is_owned(&context) {
+                for inbox in &item.main()[ldp!(inbox)] {
+                    if let Pointer::Id(inbox) = inbox {
+                        boxes.insert(inbox.to_owned());
+                    }
+                }
+            } else {
+                if item
+                    .main()
+                    .types
+                    .contains(&String::from(as2!(OrderedCollection)))
+                {
+                    panic!("todo iterate");
+                }
+                for inbox in &item.main()[ldp!(inbox)] {
+                    if let Pointer::Id(inbox) = inbox {
+                        boxes.insert(inbox.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((context, obj, store, boxes))
+}
+
 #[async(boxed_send)]
-fn run_handlers<T: EntityStore>(
+fn run_handlers<T: EntityStore, R: QueueStore>(
     context: Context,
     store: T,
+    mut queue: R,
     inbox: String,
     expanded: Value,
-) -> Result<(T, Response<Value>), ServerError<T>> {
-    let root = expanded.as_object().unwrap()["@id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let mut untangled = untangle(expanded).unwrap();
+) -> Result<(T, R, Response<Value>), ServerError<T>> {
     let user = Some(context.user.subject.to_owned());
     let mut source = await!(store.get(inbox.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
-    let (context, mut store, id) = if source.meta()[kroeg!(box)]
+    let mut is_outbox = false;
+    let (mut context, mut store, id) = if source.meta()[kroeg!(box)]
         .contains(&Pointer::Id(as2!(outbox).to_owned()))
     {
+        is_outbox = true;
+        let mut untangled = untangle(expanded).unwrap();
         let (context, store, mut roots, data) =
             await!(assign_ids(context, store, user, untangled)).map_err(ServerError::StoreError)?;
         let store = await!(store_all(store, data)).map_err(ServerError::StoreError)?;
@@ -72,11 +119,16 @@ fn run_handlers<T: EntityStore>(
             handlers::ClientLikeHandler,
             handlers::ClientUndoHandler
         }
-    } else if source.meta()[kroeg!(box)].contains(&Pointer::Id(as2!(inbox).to_owned())) {
+    } else if source.meta()[kroeg!(box)].contains(&Pointer::Id(ldp!(inbox).to_owned())) {
         let host = {
             let host = context.user.subject.parse::<Uri>().unwrap();
             host.authority_part().unwrap().clone()
         };
+        let root = expanded.as_array().unwrap()[0].as_object().unwrap()["@id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut untangled = untangle(expanded).unwrap();
         untangled.retain(|k, v| k.parse::<Uri>().unwrap().authority_part().unwrap() == &host);
         let store = await!(store_all(store, untangled)).map_err(ServerError::StoreError)?;
         let id = root;
@@ -92,9 +144,24 @@ fn run_handlers<T: EntityStore>(
     await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
         .map_err(ServerError::StoreError)?;
 
-    let item = await!(store.get(id.to_owned()))
+    let mut item = await!(store.get(id.to_owned()))
         .map_err(ServerError::StoreError)?
         .unwrap();
+
+    if is_outbox {
+        println!(" ┃ Preparing delivery..");
+        let (c, i, s, boxes) =
+            await!(audience_for_object(context, item, store)).map_err(ServerError::StoreError)?;
+        context = c;
+        item = i;
+        store = s;
+
+        for inbox in boxes {
+            println!(" ┃ Delivering to {}", inbox);
+            queue = await!(register_delivery(queue, item.id().to_owned(), inbox)).unwrap();
+        }
+    }
+
     let (_, store, _, val) = await!(assemble(
         item,
         0,
@@ -105,6 +172,7 @@ fn run_handlers<T: EntityStore>(
 
     Ok((
         store.unwrap(),
+        queue,
         Response::builder()
             .status(201)
             .header("Location", &id as &str)
@@ -129,11 +197,12 @@ fn store_all<T: EntityStore>(
     Ok(store)
 }
 
-pub fn process<T: EntityStore>(
+pub fn process<T: EntityStore, R: QueueStore>(
     context: Context,
     store: T,
+    queue: R,
     req: Request<Body>,
-) -> impl Future<Item = (T, Response<Value>), Error = ServerError<T>> {
+) -> impl Future<Item = (T, R, Response<Value>), Error = ServerError<T>> {
     let uri = req.uri().to_owned();
     let name = format!("{}{}", context.server_base, uri.path());
 
@@ -162,5 +231,5 @@ pub fn process<T: EntityStore>(
                 )
             },
         )
-        .and_then(|expanded| run_handlers(context, store, name, expanded))
+        .and_then(|expanded| run_handlers(context, store, queue, name, expanded))
 }
