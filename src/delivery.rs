@@ -9,6 +9,7 @@ use tokio::timer::Delay;
 
 use super::compact_with_context;
 use hyper::client::HttpConnector;
+use hyper_tls::HttpsConnector;
 use hyper::{
     header::{HeaderMap, HeaderValue},
     Body, Client, Method, Request, Uri,
@@ -88,13 +89,13 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
 
 #[async]
 pub fn deliver_one<T: EntityStore, R: QueueStore>(
-    context: Context,
-    client: Client<HttpConnector, Body>,
+    mut context: Context,
+    client: Client<HttpsConnector<HttpConnector>, Body>,
     store: T,
     item: R::Item,
 ) -> Result<
-    (Context, Client<HttpConnector, Body>, T, R::Item),
-    (Context, Client<HttpConnector, Body>, T, R::Item, T::Error),
+    (Context, Client<HttpsConnector<HttpConnector>, Body>, T, R::Item),
+    (Context, Client<HttpsConnector<HttpConnector>, Body>, T, R::Item, T::Error),
 > {
     match item.event() {
         "deliver" => {
@@ -113,6 +114,11 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 Ok(None) => return Ok((context, client, store, item)),
                 Err(err) => return Err((context, client, store, item, err)),
             };
+
+            if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
+                context.user.subject = id;
+            }
+
 
             let (_, nstore, _, data) = await!(assemble(
                 sdata.clone(),
@@ -190,7 +196,10 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
     queue: R,
 ) -> Result<(), ()> {
     println!(" ╔ delivery started\n ╚ ready...");
-    let mut client = Client::new();
+
+    let connector = HttpsConnector::new(1).unwrap();
+    let mut client = Client::builder().build::<_, Body>(connector);
+
     loop {
         let item = await!(queue.get_item()).unwrap();
         match item {
