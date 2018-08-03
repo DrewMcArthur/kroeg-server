@@ -73,8 +73,13 @@ fn audience_for_object<T: EntityStore>(
                     .types
                     .contains(&String::from(as2!(OrderedCollection)))
                 {
-                    panic!("todo iterate");
+                    let data =
+                        await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
+                    for item in data.items {
+                        audience.push((0, item));
+                    }
                 }
+
                 for inbox in &item.main()[ldp!(inbox)] {
                     if let Pointer::Id(inbox) = inbox {
                         boxes.insert(inbox.to_owned());
@@ -124,12 +129,16 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
             let host = context.user.subject.parse::<Uri>().unwrap();
             host.authority_part().unwrap().clone()
         };
+        println!("{}", expanded.to_string());
         let root = expanded.as_array().unwrap()[0].as_object().unwrap()["@id"]
             .as_str()
             .unwrap()
             .to_owned();
         let mut untangled = untangle(expanded).unwrap();
         untangled.retain(|k, v| k.parse::<Uri>().unwrap().authority_part().unwrap() == &host);
+        if !untangled.contains_key(&root) {
+            return Err(ServerError::BadSharedInbox);
+        }
         let store = await!(store_all(store, untangled)).map_err(ServerError::StoreError)?;
         let id = root;
         run_handlers! {
@@ -162,16 +171,8 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
         }
     }
 
-    let (_, store, _, val) = await!(assemble(
-        item,
-        0,
-        Some(store),
-        DefaultAuthorizer::new(&context),
-        HashSet::new()
-    )).map_err(ServerError::StoreError)?;
-
     Ok((
-        store.unwrap(),
+        store,
         queue,
         Response::builder()
             .status(201)
@@ -180,7 +181,7 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
                 "Content-Type",
                 "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
             )
-            .body(val)
+            .body(json!({ "@id": id }))
             .unwrap(),
     ))
 }
@@ -190,7 +191,14 @@ fn store_all<T: EntityStore>(
     mut store: T,
     items: HashMap<String, StoreItem>,
 ) -> Result<T, T::Error> {
-    for (key, value) in items {
+    for (key, mut value) in items {
+        let item = await!(store.get(key.to_owned()))?;
+        if let Some(mut item) = item {
+            if item.meta()[kroeg!(instance)] != value.meta()[kroeg!(instance)] {
+                println!("not storing {} because self-bug", item.id());
+                continue;
+            }
+        }
         await!(store.put(key, value))?;
     }
 
@@ -213,7 +221,7 @@ pub fn process<T: EntityStore, R: QueueStore>(
         .map_err(|e| ServerError::HyperError(e))
         .and_then(
             |val| -> Box<Future<Item = Value, Error = ServerError<T>> + Send> {
-                let data = match from_slice(val.as_ref()) {
+                let data: Value = match from_slice(val.as_ref()) {
                     Ok(data) => data,
                     Err(err) => return Box::new(future::err(ServerError::SerdeError(err))),
                 };

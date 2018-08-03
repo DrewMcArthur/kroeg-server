@@ -96,6 +96,7 @@ pub enum ServerError<T: EntityStore> {
     CompactionError(CompactionError<context::HyperContextLoader>),
     HandlerError(Box<error::Error + Send + Sync + 'static>),
     PostToNonbox,
+    BadSharedInbox,
     Test,
 }
 
@@ -110,6 +111,7 @@ impl<T: EntityStore> fmt::Display for ServerError<T> {
             ServerError::HandlerError(err) => write!(f, "handler error: {}", err),
             ServerError::Test => write!(f, "Test!\n"),
             ServerError::PostToNonbox => write!(f, "tried to POST to a non-inbox/outbox entity"),
+            ServerError::BadSharedInbox => write!(f, "Mastodon quirk: actor != authorization token"),
         }
     }
 }
