@@ -37,15 +37,15 @@ impl RemoteContextLoader for HyperContextLoader {
     type Future = Box<Future<Item = Value, Error = Error> + Send>;
 
     fn load_context(url: String) -> Self::Future {
-        if let Some(val) = CONTEXT_MAP.get(&url) {
-            return Box::new(future::ok(val.clone()));
-        }
-
         let url = if url == "https://w3id.org/security/v1" {
             "https://web-payments.org/contexts/security-v1.jsonld".to_owned()
         } else {
             url
         };
+
+        if let Some(val) = CONTEXT_MAP.get(&url) {
+            return Box::new(future::ok(val.clone()));
+        }
 
         let request = Request::get(url.to_owned())
             .header("Accept", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/activity+json, application/json")
