@@ -170,7 +170,7 @@ fn process_request<T: EntityStore, R: QueueStore>(
     let future: Box<
         Future<Item = (T, R, Response<serde_json::Value>), Error = ServerError<T>> + Send,
     > = match *req.method() {
-        Method::GET => {
+        Method::GET | Method::HEAD => {
             if req.uri().path() == "/-/context" {
                 println!(" ┗ returning context");
                 return Box::new(future::ok((store, queue, context::extra_context())));
@@ -248,10 +248,13 @@ impl Service for KroegService {
 
                         Ok(data)
                     }
-                    Err(err) => Ok(Response::builder()
-                        .status(500)
-                        .body(Body::from(err.to_string()))
-                        .unwrap()),
+                    Err(err) => {
+                        eprintln!(" ┗ err {}", err);
+                        Ok(Response::builder()
+                            .status(500)
+                            .body(Body::from(err.to_string()))
+                            .unwrap())
+                    }
                 }),
         )
     }
