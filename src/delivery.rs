@@ -9,11 +9,11 @@ use tokio::timer::Delay;
 
 use super::compact_with_context;
 use hyper::client::HttpConnector;
-use hyper_tls::HttpsConnector;
 use hyper::{
     header::{HeaderMap, HeaderValue},
     Body, Client, Method, Request, Uri,
 };
+use hyper_tls::HttpsConnector;
 use jsonld::nodemap::Pointer;
 use kroeg_tap::StoreItem;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
@@ -84,7 +84,15 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
     signer.update(signed.as_bytes()).unwrap();
     let signature = base64::encode_config(&signer.sign_to_vec().unwrap(), base64::STANDARD_NO_PAD);
 
-    req.headers_mut().insert("Signature", format!("keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"(request-target) date digest\",signature=\"{}\"", key_object.id(), signature).parse().unwrap());
+    req.headers_mut().insert(
+        "Signature",
+        format!(
+            "keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"(request-target)\",signature=\"{}\"",
+            key_object.id(),
+            signature
+        ).parse()
+            .unwrap(),
+    );
 }
 
 #[async]
@@ -94,8 +102,19 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
     store: T,
     item: R::Item,
 ) -> Result<
-    (Context, Client<HttpsConnector<HttpConnector>, Body>, T, R::Item),
-    (Context, Client<HttpsConnector<HttpConnector>, Body>, T, R::Item, T::Error),
+    (
+        Context,
+        Client<HttpsConnector<HttpConnector>, Body>,
+        T,
+        R::Item,
+    ),
+    (
+        Context,
+        Client<HttpsConnector<HttpConnector>, Body>,
+        T,
+        R::Item,
+        T::Error,
+    ),
 > {
     match item.event() {
         "deliver" => {
@@ -118,7 +137,6 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
             if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
                 context.user.subject = id;
             }
-
 
             let (_, nstore, _, data) = await!(assemble(
                 sdata.clone(),
@@ -160,7 +178,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
                 create_signature(&data.to_string(), &key_object, &mut req);
 
-                let response = await!(client.request(req)).unwrap();
+                let response = match await!(client.request(req)) { Ok(val) => val, Err(err) => { println!("ERR {:?}", err); return Ok((context, client, store, item)); }};
                 let (header, _) = response.into_parts();
 
                 header
