@@ -117,6 +117,8 @@ pub fn process<T: EntityStore>(
 
     let mut builder = Response::builder();
 
+    builder.header("Vary", "Accept");
+
     builder.header(
         "Content-Type",
         "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
