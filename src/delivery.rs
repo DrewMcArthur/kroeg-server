@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::error::Error;
 use std::time::{Duration, Instant};
+use tokio::prelude::*;
 use tokio::timer::Delay;
 
 use super::compact_with_context;
@@ -83,7 +84,15 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
     signer.update(signed.as_bytes()).unwrap();
     let signature = base64::encode_config(&signer.sign_to_vec().unwrap(), base64::STANDARD_NO_PAD);
 
-    req.headers_mut().insert("Signature", format!("keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"(request-target) date digest\",signature=\"{}\"", key_object.id(), signature).parse().unwrap());
+    req.headers_mut().insert(
+        "Signature",
+        format!(
+            "keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"(request-target)\",signature=\"{}\"",
+            key_object.id(),
+            signature
+        ).parse()
+        .unwrap(),
+    );
 }
 
 #[async]
@@ -169,7 +178,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
                 create_signature(&data.to_string(), &key_object, &mut req);
 
-                let response = await!(client.request(req)).unwrap();
+                let response = match await!(client.request(req).deadline(Instant::now() + Duration::from_millis(10000))) { Ok(val) => val, Err(err) => { println!("ERR {:?}", err); return Ok((context, client, store, item)); }};
                 let (header, _) = response.into_parts();
 
                 header

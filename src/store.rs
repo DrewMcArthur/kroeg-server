@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::error;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::prelude::*;
 
 #[derive(Debug)]
 pub struct RetrievingEntityStore<T: EntityStore>(Arc<Mutex<T>>, String);
@@ -92,9 +94,18 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                             Box::new(future::ok::<_, RetrievingEntityStoreError<T>>(Some(val)))
                         }
                         None => {
-                            if path.starts_with(&base) {
+                            if path.starts_with(&base)
+                                || path.starts_with("https://www.w3.org/ns/activitystreams#tag")
+                            {
                                 Box::new(future::ok(None))
                             } else {
+                                eprintln!(" ┃ retrieving {} remotely", path);
+                                let path = if path == "https://www.w3.org/ns/activitystreams#Public"
+                                {
+                                    "https://gist.githubusercontent.com/puckipedia/cdca8b2b213e92640118f4a2fe451c74/raw/161cba71bef63c7219597528033a0a3d9d2a62e3/bad.json".to_owned()
+                                } else {
+                                    path.to_owned()
+                                };
                                 let request = Request::get(path.to_owned())
                                 .header("Accept", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/activity+json, application/json")
                                 .body(Body::default())
@@ -102,63 +113,70 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
 
                                 let connector = HttpsConnector::new(1).unwrap();
                                 let client = Client::builder().build::<_, Body>(connector);
-                                //Box::new(future::ok(None)); //panic!("no");
 
                                 Box::new(
                                     client
                                         .request(request)
                                         .and_then(|res| {
                                             let boxed: Box<Future<Item = Option<hyper::Chunk>, Error = hyper::Error> + 'static + Send> = if res.status() == StatusCode::OK {
-                                        Box::new(res.into_body().concat2().map(|f| Some(f)))
-                                    } else {
-                                        Box::new(future::ok(None))
-                                    };
+                                            Box::new(res.into_body().concat2().map(|f| Some(f)))
+                                          } else {
+                                            Box::new(future::ok(None))
+                                          };
 
                                             boxed
                                         })
-                                        .map_err(RetrievingEntityStoreError::HyperError)
-                                        .and_then(move |val| {
-                                            let response: Box<Future<Item = Option<StoreItem>, Error = RetrievingEntityStoreError<T>> + 'static + Send> = if let Some(val) = val {
-                                        eprintln!(" ┃ downloaded {} remotely", path);
-                                        let res: Value = from_slice(val.as_ref()).unwrap();
-                                        println!("{:?}", res);
-                                        //CONTEXT_MAP.insert(url, res.to_owned());
-                                        //res
-                                        Box::new(expand::<HyperContextLoader>(
-                                            res,
-                                            JsonLdOptions {
-                                                base: None,
-                                                compact_arrays: None,
-                                                expand_context: None,
-                                                processing_mode: None,
-                                            },
-                                        ).map_err(|_| RetrievingEntityStoreError::Rest)
-                                        .and_then(move |expanded| {
-                                            let host = {
-                                                let host = path.parse::<Uri>().unwrap();
-                                                host.authority_part().unwrap().clone()
-                                            };
-                                            println!("{}", expanded.to_string());
-                                            let root = expanded.as_array().unwrap()[0]
-                                                .as_object()
-                                                .unwrap()["@id"]
-                                                .as_str()
-                                                .unwrap()
-                                                .to_owned();
-                                            let mut untangled = untangle(expanded).unwrap();
-                                            untangled.retain(|k, v| {
-                                                k.parse::<Uri>().unwrap().authority_part().unwrap()
-                                                    == &host
-                                            });
-                                            println!("host: {:?}", untangled);
-                                            store_all(clonerc, untangled).map_err(RetrievingEntityStoreError::StoreError).map(|store| (path, store))
+                                        .deadline(Instant::now() + Duration::from_secs(15))
+                                        .map_err(|f| {
+                                            if f.is_elapsed() {
+                                                eprintln!("    fail");
+                                                RetrievingEntityStoreError::Rest
+                                            } else {
+                                                RetrievingEntityStoreError::HyperError(
+                                                    f.into_inner().unwrap(),
+                                                )
+                                            }
                                         })
-                                        .and_then(move |(path, store)| {
-                                            store.lock().unwrap().get(path).map_err(RetrievingEntityStoreError::StoreError)
-                                        }))
+                                        .then(move |val| {
+                                            let response: Box<Future<Item = Option<StoreItem>, Error = RetrievingEntityStoreError<T>> + 'static + Send> = match val { Ok(val) => if let Some(val) = val {
+                                        eprintln!(" ┃ downloaded {} remotely", path);
+                                        match from_slice(&val) { Ok(res) => {
+                                            Box::new(expand::<HyperContextLoader>(
+                                                res,
+                                                JsonLdOptions {
+                                                    base: None,
+                                                    compact_arrays: None,
+                                                    expand_context: None,
+                                                    processing_mode: None,
+                                                },
+                                            ).map_err(|_| RetrievingEntityStoreError::Rest)
+                                            .and_then(move |expanded| {
+                                                let host = {
+                                                    let host = path.parse::<Uri>().unwrap();
+                                                    host.authority_part().unwrap().clone()
+                                                };
+                                                let root = expanded.as_array().unwrap()[0]
+                                                    .as_object()
+                                                    .unwrap()["@id"]
+                                                    .as_str()
+                                                    .unwrap()
+                                                    .to_owned();
+                                                let mut untangled = untangle(expanded).unwrap();
+                                                untangled.retain(|k, v| {
+                                                    k.parse::<Uri>().unwrap().authority_part().unwrap()
+                                                    == &host
+                                                });
+                                                store_all(clonerc, untangled).map_err(RetrievingEntityStoreError::StoreError).map(|store| (path, store))
+                                            })
+                                            .and_then(move |(path, store)| {
+                                                store.lock().unwrap().get(path).map_err(RetrievingEntityStoreError::StoreError)
+                                            }))
+                                        }
+                                        Err(_) => Box::new(future::ok(None))
+                                        }
                                     } else {
                                         Box::new(future::ok(None))
-                                    };
+                                    }, Err(RetrievingEntityStoreError::Rest) => Box::new(future::ok(None)), Err(e) => Box::new(future::err(e)) };
 
                                             response
                                         }),

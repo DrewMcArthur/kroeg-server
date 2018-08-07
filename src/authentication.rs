@@ -34,7 +34,7 @@ pub fn build_header_magic(parts: &Parts, sig: Vec<String>) -> Vec<u8> {
             if let Some(query) = parts.uri.query() {
                 let _ = write!(result, "?{}", query);
             }
-        } else {
+        } else if value != "" {
             let _ = write!(result, "{}: ", value);
             let mut is_first = true;
             for header in parts.headers.get_all(value) {
