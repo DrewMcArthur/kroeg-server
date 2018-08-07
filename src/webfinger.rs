@@ -1,4 +1,4 @@
-use futures::prelude::*;
+use futures::prelude::{await, *};
 
 use hyper::{Body, Request, Response};
 use jsonld::nodemap::Pointer;

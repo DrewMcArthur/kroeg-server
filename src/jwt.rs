@@ -6,7 +6,7 @@ use serde_json::from_slice;
 use serde_json::Value as JValue;
 use std::collections::HashMap;
 
-use futures::prelude::*;
+use futures::prelude::{await, *};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct JWTHeader {
@@ -76,8 +76,7 @@ pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User
             }
 
             _ => None,
-        })
-        .and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok())
+        }).and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok())
         .map(|f| PKey::from_rsa(f).unwrap())
         .unwrap();
     let mut verifier = Verifier::new(MessageDigest::sha256(), &key_data).unwrap();

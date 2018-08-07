@@ -1,5 +1,5 @@
 use futures::future;
-use futures::prelude::*;
+use futures::prelude::{await, *};
 
 use chashmap::CHashMap;
 use hyper::{Body, Client, Error, Request, Response};

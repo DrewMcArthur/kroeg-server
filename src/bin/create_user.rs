@@ -1,4 +1,4 @@
-#![feature(proc_macro, generators)]
+#![feature(generators, use_extern_macros)]
 
 extern crate toml;
 #[macro_use]
@@ -35,7 +35,7 @@ use std::fs::File;
 use std::io::Read;
 
 use futures::future;
-use futures::prelude::*;
+use futures::prelude::{await, *};
 
 fn read_config() -> config::Config {
     let config_url = dotenv::var("CONFIG").unwrap_or("server.toml".to_owned());

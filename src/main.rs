@@ -1,4 +1,4 @@
-#![feature(proc_macro, generators)]
+#![feature(generators, use_extern_macros)]
 
 extern crate toml;
 #[macro_use]
@@ -47,7 +47,7 @@ use jsonld::error::{CompactionError, ExpansionError};
 use jsonld::{compact, JsonLdOptions};
 
 use futures::future;
-use futures::prelude::*;
+use futures::prelude::{await, *};
 
 use std::fs::File;
 use std::io::Read;
@@ -233,26 +233,25 @@ impl Service for KroegService {
                 RetrievingEntityStore::new(store, self.config.server.base_uri.to_owned()),
                 queue,
             ).map_err(ServerError::StoreError)
-                .and_then(move |(_, part, store, queue, context)| {
-                    process_request(context, store, queue, Request::from_parts(part, body))
-                })
-                .then(move |x| match x {
-                    Ok((mut store, queue, data)) => {
-                        if in_transaction {
-                            if data.status().is_success() {
-                                store.unwrap().commit_transaction();
-                            } else {
-                                store.unwrap().rollback_transaction();
-                            }
+            .and_then(move |(_, part, store, queue, context)| {
+                process_request(context, store, queue, Request::from_parts(part, body))
+            }).then(move |x| match x {
+                Ok((mut store, queue, data)) => {
+                    if in_transaction {
+                        if data.status().is_success() {
+                            store.unwrap().commit_transaction();
+                        } else {
+                            store.unwrap().rollback_transaction();
                         }
-
-                        Ok(data)
                     }
-                    Err(err) => Ok(Response::builder()
-                        .status(500)
-                        .body(Body::from(err.to_string()))
-                        .unwrap()),
-                }),
+
+                    Ok(data)
+                }
+                Err(err) => Ok(Response::builder()
+                    .status(500)
+                    .body(Body::from(err.to_string()))
+                    .unwrap()),
+            }),
         )
     }
 }

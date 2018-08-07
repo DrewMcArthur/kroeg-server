@@ -8,7 +8,7 @@ use base64::decode;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Verifier};
 use serde_json::Value as JValue;
 
-use futures::prelude::*;
+use futures::prelude::{await, *};
 use std::collections::HashMap;
 
 use http::request::Parts;
@@ -95,8 +95,7 @@ pub fn verify_http_signature<R: EntityStore>(
                             }
 
                             _ => None,
-                        })
-                        .and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok());
+                        }).and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok());
 
                     if let Some(key) = pem_data {
                         let key = PKey::from_rsa(key).unwrap();

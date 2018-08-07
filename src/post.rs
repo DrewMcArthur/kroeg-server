@@ -1,7 +1,7 @@
 //! Code to handle GET requests for a server.
 
 use futures::future;
-use futures::prelude::*;
+use futures::prelude::{await, *};
 
 use hyper::{Body, Request, Response, Uri};
 use kroeg_tap::{Context, EntityStore, StoreItem};
@@ -179,8 +179,7 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
             .header(
                 "Content-Type",
                 "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
-            )
-            .body(val)
+            ).body(val)
             .unwrap(),
     ))
 }
@@ -230,6 +229,5 @@ pub fn process<T: EntityStore, R: QueueStore>(
                     ).map_err(ServerError::ExpansionError),
                 )
             },
-        )
-        .and_then(|expanded| run_handlers(context, store, queue, name, expanded))
+        ).and_then(|expanded| run_handlers(context, store, queue, name, expanded))
 }

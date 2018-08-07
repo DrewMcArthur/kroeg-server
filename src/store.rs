@@ -1,4 +1,7 @@
-use futures::{future, prelude::*};
+use futures::{
+    future,
+    prelude::{await, *},
+};
 
 use context::HyperContextLoader;
 use hyper;

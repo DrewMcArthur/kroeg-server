@@ -1,5 +1,5 @@
 use base64;
-use futures::prelude::*;
+use futures::prelude::{await, *};
 use kroeg_tap::{assemble, Context, DefaultAuthorizer, EntityStore, QueueItem, QueueStore};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -9,11 +9,11 @@ use tokio::timer::Delay;
 
 use super::compact_with_context;
 use hyper::client::HttpConnector;
-use hyper_tls::HttpsConnector;
 use hyper::{
     header::{HeaderMap, HeaderValue},
     Body, Client, Method, Request, Uri,
 };
+use hyper_tls::HttpsConnector;
 use jsonld::nodemap::Pointer;
 use kroeg_tap::StoreItem;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
@@ -42,8 +42,7 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
                 }
             }
             _ => None,
-        })
-        .and_then(|f| Rsa::private_key_from_pem(f.as_bytes()).ok())
+        }).and_then(|f| Rsa::private_key_from_pem(f.as_bytes()).ok())
         .unwrap();
     let key = PKey::from_rsa(pem_data).unwrap();
     let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
@@ -94,8 +93,19 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
     store: T,
     item: R::Item,
 ) -> Result<
-    (Context, Client<HttpsConnector<HttpConnector>, Body>, T, R::Item),
-    (Context, Client<HttpsConnector<HttpConnector>, Body>, T, R::Item, T::Error),
+    (
+        Context,
+        Client<HttpsConnector<HttpConnector>, Body>,
+        T,
+        R::Item,
+    ),
+    (
+        Context,
+        Client<HttpsConnector<HttpConnector>, Body>,
+        T,
+        R::Item,
+        T::Error,
+    ),
 > {
     match item.event() {
         "deliver" => {
@@ -118,7 +128,6 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
             if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
                 context.user.subject = id;
             }
-
 
             let (_, nstore, _, data) = await!(assemble(
                 sdata.clone(),
