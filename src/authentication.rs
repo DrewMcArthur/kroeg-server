@@ -80,7 +80,7 @@ pub fn verify_http_signature<R: EntityStore>(
             map.get("signature").cloned(),
         ) {
             (Some(key_id), Some(algorithm), Some(headers), Some(signature)) => {
-                let key_data = await!(store.get(key_id.to_owned()))?;
+                let key_data = await!(store.get(key_id.to_owned(), false))?;
                 if let Some(key_data) = key_data {
                     let pem_data = key_data.main()[sec!(publicKeyPem)]
                         .iter()

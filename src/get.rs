@@ -21,7 +21,7 @@ pub fn process<T: EntityStore>(
 
     let query = uri.query().map(|f| f.to_string());
     let val = if let Some(query) = query {
-        let val = await!(store.get(name.to_owned())).map_err(ServerError::StoreError)?;
+        let val = await!(store.get(name.to_owned(), false)).map_err(ServerError::StoreError)?;
         if let Some(val) = val {
             println!(" ┣ query '{}'", query);
             if !val
@@ -68,7 +68,7 @@ pub fn process<T: EntityStore>(
             None
         }
     } else {
-        await!(store.get(name.to_owned()))
+        await!(store.get(name.to_owned(), false))
             .map_err(|e| ServerError::StoreError(e))?
             .map(|mut entity| {
                 if entity

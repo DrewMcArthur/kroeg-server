@@ -64,7 +64,7 @@ pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User
         Err(_) => return Ok((store, None)),
     };
 
-    let key_data = await!(store.get(headerdata.kid.to_owned()))?
+    let key_data = await!(store.get(headerdata.kid.to_owned(), false))?
         .and_then(|f| f.main()[sec!(publicKeyPem)].iter().next().cloned())
         .and_then(|f| match f {
             Pointer::Value(val) => {

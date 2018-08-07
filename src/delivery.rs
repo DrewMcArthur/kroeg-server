@@ -128,7 +128,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
             let uri = data.remove(1);
             let itemid = data.remove(0);
 
-            let sdata = match await!(store.get(itemid)) {
+            let sdata = match await!(store.get(itemid, false)) {
                 Ok(Some(ok)) => ok,
                 Ok(None) => return Ok((context, client, store, item)),
                 Err(err) => return Err((context, client, store, item, err)),
@@ -150,7 +150,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
             let (context, data) = await!(compact_with_context(context, data)).unwrap();
 
-            let is_local = match await!(store.get(uri.to_owned())) {
+            let is_local = match await!(store.get(uri.to_owned(), false)) {
                 Ok(Some(val)) => val.is_owned(&context),
                 Ok(None) => false,
                 Err(err) => return Err((context, client, store, item, err)),
@@ -165,13 +165,13 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 req.headers_mut().insert("Content-Type", HeaderValue::from_str("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"").unwrap());
 
                 let owner = if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
-                    await!(store.get(id)).unwrap().unwrap()
+                    await!(store.get(id, false)).unwrap().unwrap()
                 } else {
                     panic!("todo");
                 };
 
                 let key_object = if let Pointer::Id(id) = owner.main()[sec!(publicKey)][0].to_owned() {
-                    await!(store.get(id)).unwrap().unwrap()
+                    await!(store.get(id, false)).unwrap().unwrap()
                 } else {
                     panic!("todo")
                 };

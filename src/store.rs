@@ -75,14 +75,14 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
         Box<Future<Item = CollectionPointer, Error = Self::Error> + 'static + Send>;
     type WriteCollectionFuture = Box<Future<Item = (), Error = Self::Error> + 'static + Send>;
 
-    fn get(&self, path: String) -> Self::GetFuture {
+    fn get(&self, path: String, local: bool) -> Self::GetFuture {
         let base = self.1.to_owned();
         let clonerc = self.0.clone();
         Box::new(
             self.0
                 .lock()
                 .unwrap()
-                .get(path.to_owned())
+                .get(path.to_owned(), local)
                 .map_err(RetrievingEntityStoreError::StoreError)
                 .and_then(move |value| {
                     let val: Box<
@@ -96,6 +96,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                         None => {
                             if path.starts_with(&base)
                                 || path.starts_with("https://www.w3.org/ns/activitystreams#tag")
+                                || local
                             {
                                 Box::new(future::ok(None))
                             } else {
@@ -169,7 +170,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                                                 store_all(clonerc, untangled).map_err(RetrievingEntityStoreError::StoreError).map(|store| (path, store))
                                             })
                                             .and_then(move |(path, store)| {
-                                                store.lock().unwrap().get(path).map_err(RetrievingEntityStoreError::StoreError)
+                                                store.lock().unwrap().get(path, local).map_err(RetrievingEntityStoreError::StoreError)
                                             }))
                                         }
                                         Err(_) => Box::new(future::ok(None))

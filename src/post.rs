@@ -59,7 +59,7 @@ fn audience_for_object<T: EntityStore>(
 
     while audience.len() > 0 {
         let (depth, item) = audience.remove(0);
-        let item = await!(store.get(item))?;
+        let item = await!(store.get(item, false))?;
         if let Some(item) = item {
             if !item.is_owned(&context) {
                 for inbox in &item.main()[ldp!(inbox)] {
@@ -101,7 +101,7 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
     expanded: Value,
 ) -> Result<(T, R, Response<Value>), ServerError<T>> {
     let user = Some(context.user.subject.to_owned());
-    let mut source = await!(store.get(inbox.to_owned()))
+    let mut source = await!(store.get(inbox.to_owned(), false))
         .map_err(ServerError::StoreError)?
         .unwrap();
     let mut is_outbox = false;
@@ -153,7 +153,7 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
     await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
         .map_err(ServerError::StoreError)?;
 
-    let mut item = await!(store.get(id.to_owned()))
+    let mut item = await!(store.get(id.to_owned(), false))
         .map_err(ServerError::StoreError)?
         .unwrap();
 
@@ -191,7 +191,7 @@ fn store_all<T: EntityStore>(
     items: HashMap<String, StoreItem>,
 ) -> Result<T, T::Error> {
     for (key, mut value) in items {
-        let item = await!(store.get(key.to_owned()))?;
+        let item = await!(store.get(key.to_owned(), true))?;
         if let Some(mut item) = item {
             if item.meta()[kroeg!(instance)] != value.meta()[kroeg!(instance)] {
                 println!("not storing {} because self-bug", item.id());

@@ -37,7 +37,7 @@ pub fn process<T: EntityStore>(
             .to_owned();
         let hacky = format!("{}/~{}", context.server_base, p);
         let user: Option<StoreItem> =
-            await!(store.get(hacky.to_owned())).map_err(ServerError::StoreError)?;
+            await!(store.get(hacky.to_owned(), true)).map_err(ServerError::StoreError)?;
         if let Some(user) = user {
             let response = WebfingerResponse {
                 subject: format!(
