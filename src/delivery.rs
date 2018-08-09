@@ -3,17 +3,13 @@ use futures::prelude::{await, *};
 use kroeg_tap::{assemble, Context, DefaultAuthorizer, EntityStore, QueueItem, QueueStore};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::error::Error;
 use std::time::{Duration, Instant};
 use tokio::prelude::*;
 use tokio::timer::Delay;
 
 use super::compact_with_context;
 use hyper::client::HttpConnector;
-use hyper::{
-    header::{HeaderMap, HeaderValue},
-    Body, Client, Method, Request, Uri,
-};
+use hyper::{header::HeaderValue, Body, Client, Method, Request};
 use hyper_tls::HttpsConnector;
 use jsonld::nodemap::Pointer;
 use kroeg_tap::StoreItem;

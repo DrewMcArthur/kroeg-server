@@ -27,6 +27,7 @@ extern crate sha2;
 extern crate tokio;
 
 mod authentication;
+mod bridge;
 mod config;
 mod context;
 mod delivery;
@@ -171,39 +172,54 @@ fn process_request<T: EntityStore, R: QueueStore>(
     queue: R,
     req: Request<Body>,
 ) -> Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send> {
-    let future: Box<
-        Future<Item = (T, R, Response<serde_json::Value>), Error = ServerError<T>> + Send,
-    > = match *req.method() {
-        Method::GET | Method::HEAD => {
-            if req.uri().path() == "/-/context" {
-                println!(" ┗ returning context");
-                return Box::new(future::ok((store, queue, context::extra_context())));
-            } else if req.uri().path() == "/.well-known/webfinger" {
-                return Box::new(
-                    webfinger::process(context.clone(), store, req)
-                        .map(move |(a, b)| (a, queue, b)),
-                );
-            } else {
-                Box::new(get::process(context.clone(), store, req).map(move |(a, b)| (a, queue, b)))
-            }
-        }
-        Method::POST => Box::new(post::process(context.clone(), store, queue, req)),
-        _ => {
-            let body = Body::from(MSG_INVALID_METHOD);
-            return Box::new(future::ok((
-                store,
-                queue,
-                Response::builder()
-                    .status(StatusCode::METHOD_NOT_ALLOWED)
-                    .body(body)
-                    .unwrap(),
-            )));
-        }
-    };
+    let result: Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send> =
+        if req.uri().path().starts_with("/api/v1") {
+            use bridge::mastodon;
+            Box::new(
+                mastodon::route(context, req, store)
+                    .map_err(ServerError::StoreError)
+                    .map(move |(response, store)| (store, queue, response)),
+            )
+        } else {
+            let future: Box<
+                Future<Item = (T, R, Response<serde_json::Value>), Error = ServerError<T>> + Send,
+            > = match *req.method() {
+                Method::GET | Method::HEAD => {
+                    if req.uri().path() == "/-/context" {
+                        println!(" ┗ returning context");
+                        return Box::new(future::ok((store, queue, context::extra_context())));
+                    } else if req.uri().path() == "/.well-known/webfinger" {
+                        return Box::new(
+                            webfinger::process(context.clone(), store, req)
+                                .map(move |(a, b)| (a, queue, b)),
+                        );
+                    } else {
+                        Box::new(
+                            get::process(context.clone(), store, req)
+                                .map(move |(a, b)| (a, queue, b)),
+                        )
+                    }
+                }
+                Method::POST => Box::new(post::process(context.clone(), store, queue, req)),
+                _ => {
+                    let body = Body::from(MSG_INVALID_METHOD);
+                    return Box::new(future::ok((
+                        store,
+                        queue,
+                        Response::builder()
+                            .status(StatusCode::METHOD_NOT_ALLOWED)
+                            .body(body)
+                            .unwrap(),
+                    )));
+                }
+            };
 
-    Box::new(future.and_then(|(store, queue, res)| {
-        compact_result(context, res).map(move |(_, res)| (store, queue, res))
-    }))
+            Box::new(future.and_then(|(store, queue, res)| {
+                compact_result(context, res).map(move |(_, res)| (store, queue, res))
+            }))
+        };
+
+    result
 }
 
 #[derive(Clone)]

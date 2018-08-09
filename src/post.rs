@@ -11,7 +11,7 @@ use super::context::HyperContextLoader;
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
 
-use kroeg_tap::{assemble, assign_ids, untangle, DefaultAuthorizer, MessageHandler, QueueStore};
+use kroeg_tap::{assign_ids, untangle, MessageHandler, QueueStore};
 use kroeg_tap_activitypub::handlers;
 
 use super::delivery::register_delivery;

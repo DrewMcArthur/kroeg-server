@@ -1,10 +1,7 @@
 use futures::prelude::{await, *};
 
 use hyper::{Body, Request, Response};
-use jsonld::nodemap::Pointer;
-use kroeg_tap::{assemble, Authorizer, Context, DefaultAuthorizer, EntityStore, StoreItem};
-use serde_json::Value;
-use std::collections::HashSet;
+use kroeg_tap::{Context, EntityStore, StoreItem};
 
 use super::ServerError;
 

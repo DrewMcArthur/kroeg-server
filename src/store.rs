@@ -5,13 +5,11 @@ use futures::{
 
 use context::HyperContextLoader;
 use hyper;
-use hyper::{Body, Client, Error, Request, Response, StatusCode, Uri};
+use hyper::{Body, Client, Request, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
-use jsonld::RemoteContextLoader;
 use jsonld::{expand, JsonLdOptions};
-use kroeg_tap::Context;
 use kroeg_tap::{untangle, CollectionPointer, EntityStore, StoreItem};
-use serde_json::{from_slice, Value};
+use serde_json::from_slice;
 use std::collections::HashMap;
 use std::error;
 use std::fmt;
