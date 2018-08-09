@@ -83,7 +83,10 @@ pub fn verify_http_signature<R: EntityStore>(
                 let mut key_id = key_id.to_owned();
                 if key_id.starts_with("acct:") {
                     // XXX Mastodon hack, clean this code up later
-                    let spl = key_id.split(':').collect::<Vec<_>>()[1].split('@').map(String::from).collect::<Vec<_>>();
+                    let spl = key_id.split(':').collect::<Vec<_>>()[1]
+                        .split('@')
+                        .map(String::from)
+                        .collect::<Vec<_>>();
                     key_id = format!("https://{}/users/{}#public-key", spl[1], spl[0]);
                 }
                 let key_data = await!(store.get(key_id.to_owned(), false))?;
