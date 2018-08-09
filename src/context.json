@@ -3,6 +3,7 @@
     "kroeg": "https://puckipedia.com/kroeg/ns#",
 
     "NotFound": "kroeg:NotFound",
-    "as:Public": null
+    "as:Public": null,
+    "manuallyApprovesFollowers": "as:manuallyApprovesFollowers"
   }]
 }

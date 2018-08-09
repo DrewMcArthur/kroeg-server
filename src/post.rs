@@ -27,7 +27,9 @@ macro_rules! run_handlers {
         let mut store = $store;
         let inbox = $inbox;
         let mut id = $id;
+        println!(" ┃ handlers start");
         $({
+            println!(" ┃ handlers: {}", stringify!($exp));
             let item = $exp;
             let (ncontext, nstore, nid) = await!(item.handle(context, store, inbox.to_owned(), id))
                 .map_err(|e| ServerError::HandlerError(Box::new(e)))?;
@@ -36,6 +38,7 @@ macro_rules! run_handlers {
             store = nstore;
         })*
 
+        println!(" ┃ handlers end");
         (context, store, id)
         }
     };
@@ -129,7 +132,6 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
             let host = context.user.subject.parse::<Uri>().unwrap();
             host.authority_part().unwrap().clone()
         };
-        println!("{}", expanded.to_string());
         let root = expanded.as_array().unwrap()[0].as_object().unwrap()["@id"]
             .as_str()
             .unwrap()

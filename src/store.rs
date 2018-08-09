@@ -94,13 +94,13 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                             Box::new(future::ok::<_, RetrievingEntityStoreError<T>>(Some(val)))
                         }
                         None => {
-                            if path.starts_with(&base)
+                            if path.starts_with(&base) || path.starts_with("_:")
                                 || path.starts_with("https://www.w3.org/ns/activitystreams#tag")
                                 || local
                             {
                                 Box::new(future::ok(None))
                             } else {
-                                eprintln!(" ┃ retrieving {} remotely", path);
+                                eprint!(" ┃ retrieving {}", path);
                                 let path = if path == "https://www.w3.org/ns/activitystreams#Public"
                                 {
                                     "https://gist.githubusercontent.com/puckipedia/cdca8b2b213e92640118f4a2fe451c74/raw/161cba71bef63c7219597528033a0a3d9d2a62e3/bad.json".to_owned()
@@ -130,9 +130,10 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                                         .deadline(Instant::now() + Duration::from_secs(15))
                                         .map_err(|f| {
                                             if f.is_elapsed() {
-                                                eprintln!("    fail");
+                                                eprintln!(" fail timeout");
                                                 RetrievingEntityStoreError::Rest
                                             } else {
+                                                eprintln!(" fail hyper");
                                                 RetrievingEntityStoreError::HyperError(
                                                     f.into_inner().unwrap(),
                                                 )
@@ -140,7 +141,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                                         })
                                         .then(move |val| {
                                             let response: Box<Future<Item = Option<StoreItem>, Error = RetrievingEntityStoreError<T>> + 'static + Send> = match val { Ok(val) => if let Some(val) = val {
-                                        eprintln!(" ┃ downloaded {} remotely", path);
+                                        eprintln!(" done");
                                         match from_slice(&val) { Ok(res) => {
                                             Box::new(expand::<HyperContextLoader>(
                                                 res,

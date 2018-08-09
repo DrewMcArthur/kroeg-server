@@ -253,10 +253,14 @@ impl Service for KroegService {
                 }
                 Err(err) => {
                     eprintln!(" ┗ err {}", err);
-                    Ok(Response::builder()
-                        .status(500)
-                        .body(Body::from(err.to_string()))
-                        .unwrap())
+                    if let ServerError::BadSharedInbox = err {
+                        Ok(Response::builder().status(202).body(Body::from("yeah not accepting it")).unwrap())
+                    } else {
+                        Ok(Response::builder()
+                            .status(500)
+                            .body(Body::from(err.to_string()))
+                            .unwrap())
+                    }
                 }
             }),
         )
