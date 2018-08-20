@@ -1,0 +1,7 @@
+listen = "127.0.0.1:3000"
+database = "postgres://postgres@localhost:5433/activitypub"
+
+[server]
+base_uri = "https://puckipedia.com"
+instance_id = 1
+admins = ["http://127.0.0.1:3000/admin"]

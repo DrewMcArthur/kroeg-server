@@ -1,3 +1,4 @@
+#![recursion_limit="128"]
 #![feature(generators, use_extern_macros)]
 
 extern crate toml;
@@ -11,6 +12,7 @@ extern crate futures_await as futures;
 extern crate hyper;
 extern crate hyper_tls;
 extern crate jsonld;
+extern crate serde;
 #[macro_use]
 extern crate serde_json;
 
@@ -173,7 +175,7 @@ fn process_request<T: EntityStore, R: QueueStore>(
     req: Request<Body>,
 ) -> Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send> {
     let result: Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send> =
-        if req.uri().path().starts_with("/api/v1") {
+        if req.uri().path().starts_with("/api/v1") || req.uri().path().starts_with("/oauth") {
             use bridge::mastodon;
             Box::new(
                 mastodon::route(context, req, store)

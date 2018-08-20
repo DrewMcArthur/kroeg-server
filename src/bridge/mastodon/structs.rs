@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataItem {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
     pub username: String,
@@ -28,13 +28,13 @@ pub struct Account {
     pub bot: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Application {
     pub name: String,
     pub website: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub id: String,
     #[serde(rename = "type")]
@@ -47,7 +47,7 @@ pub struct Attachment {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub url: String,
     pub title: String,
@@ -64,20 +64,20 @@ pub struct Card {
     pub height: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Context {
     pub ancestors: Vec<Status>,
     pub descendants: Vec<Status>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emoji {
     pub shortcode: String,
     pub static_url: String,
     pub url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instance {
     pub uri: String,
     pub title: String,
@@ -89,7 +89,7 @@ pub struct Instance {
     pub contact_account: Option<Account>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mention {
     pub url: String,
     pub username: String,
@@ -97,7 +97,7 @@ pub struct Mention {
     pub id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub id: String,
     #[serde(rename = "type")]
@@ -107,7 +107,7 @@ pub struct Notification {
     pub status: Option<Status>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relationship {
     pub id: String,
     pub following: bool,
@@ -120,14 +120,14 @@ pub struct Relationship {
     pub showing_reblogs: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Results {
     pub accounts: Vec<Account>,
     pub statuses: Vec<Status>,
     pub hashtags: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
     pub id: String,
     pub uri: String,
@@ -145,7 +145,7 @@ pub struct Status {
     pub favourited: Option<bool>,
     pub muted: Option<bool>,
     pub sensitive: bool,
-    pub spoiler_text: bool,
+    pub spoiler_text: String,
     pub visibility: String,
     pub media_attachments: Vec<Attachment>,
     pub mentions: Vec<Mention>,
@@ -155,7 +155,7 @@ pub struct Status {
     pub pinned: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
     pub name: String,
     pub url: String,

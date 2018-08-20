@@ -9,35 +9,41 @@ use serde_json;
 
 enum RequestType {
     Normal,
-    Followers,
-    Following,
-    Statuses,
-    Follow,
-    Unfollow,
-    Block,
-    Unblock,
+    Context,
+    Card,
+    RebloggedBy,
+    FavouritedBy,
+    Reblog,
+    Unreblog,
+    Favourite,
+    Unfavourite,
+    Pin,
+    Unpin,
     Mute,
-    Unmute,
+    Unmute
 }
 
 impl RequestType {
     fn parse(typ: &str) -> Option<RequestType> {
         match typ {
-            "followers" => Some(RequestType::Followers),
-            "following" => Some(RequestType::Following),
-            "statuses" => Some(RequestType::Statuses),
-            "follow" => Some(RequestType::Follow),
-            "unfollow" => Some(RequestType::Unfollow),
-            "block" => Some(RequestType::Block),
-            "unblock" => Some(RequestType::Unblock),
             "mute" => Some(RequestType::Mute),
             "unmute" => Some(RequestType::Unmute),
+            "context" => Some(RequestType::Context),
+            "card" => Some(RequestType::Card),
+            "reblogged_by" => Some(RequestType::RebloggedBy),
+            "favourited_by" => Some(RequestType::FavouritedBy),
+            "reblog" => Some(RequestType::Reblog),
+            "unreblog" => Some(RequestType::Unreblog),
+            "favourite" => Some(RequestType::Favourite),
+            "unfavourite" => Some(RequestType::Unfavourite),
+            "pin" => Some(RequestType::Pin),
+            "unpin" => Some(RequestType::Unpin),
             _ => None
         }
     }
 }
 
-#[async]
+#[async(boxed_send)]
 pub fn route<T: EntityStore>(
     context: Context,
     request: Request<Body>,
@@ -45,7 +51,7 @@ pub fn route<T: EntityStore>(
 ) -> Result<(Response<Body>, T), T::Error> {
     println!("routed into account");
     let (path, message_type) = {
-	let parts: Vec<_> = request.uri().path()[16..].split('/').collect();
+	let parts: Vec<_> = request.uri().path()[17..].split('/').collect();
 	match parts.len() {
             1 => (translate::decode_id(parts[0].to_string()), RequestType::Normal),
             2 => if let Some(val) = RequestType::parse(&parts[1]) {
@@ -58,7 +64,7 @@ pub fn route<T: EntityStore>(
     };
     println!("{}", path);
 
-    let (store, value) = await!(translate::account(store, path))?;
+    let (store, value) = await!(translate::status(store, path))?;
     Ok((
         match value {
             Some(val) => Response::builder()
