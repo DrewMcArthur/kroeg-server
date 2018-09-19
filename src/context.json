@@ -4,6 +4,16 @@
 
     "NotFound": "kroeg:NotFound",
     "as:Public": null,
-    "manuallyApprovesFollowers": "as:manuallyApprovesFollowers"
+    "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+
+    "schema": "http://schema.org#",
+    "PropertyValue": "schema:PropertyValue",
+    "value": "schema:value",
+
+    "ostatus": "http://ostatus.org#",
+    "conversation": {"@id": "ostatus:conversation", "@type": "@id"},
+
+    "toot":"http://joinmastodon.org/ns#",
+    "Emoji":"toot:Emoji"
   }]
 }
