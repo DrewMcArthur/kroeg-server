@@ -8,8 +8,33 @@ use jsonld::RemoteContextLoader;
 use kroeg_tap::Context;
 use serde_json::{from_slice, Value};
 
-fn get_extra_context() -> Value {
+pub fn get_extra_context() -> Value {
     from_slice(include_bytes!("context.json")).unwrap()
+}
+
+pub fn get_supplement() -> Value {
+    from_slice(include_bytes!("extra_context.json")).unwrap()
+}
+
+pub fn apply_supplement(mut val: Value) -> Value {
+    match val {
+        Value::Object(mut obj) => {
+            let removed = obj.remove("@context");
+            match removed {
+                Some(Value::Array(mut arr)) => {
+                    arr.push(get_supplement());
+                    obj.insert("@context".to_owned(), Value::Array(arr));
+                },
+                Some(other) => {
+                    obj.insert("@context".to_owned(), Value::Array(vec![other, get_supplement()]));
+                }
+                _ => {}
+            };
+            Value::Object(obj)
+        }
+
+        val => val
+    }
 }
 
 pub fn extra_context() -> Response<Body> {

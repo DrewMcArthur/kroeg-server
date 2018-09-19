@@ -1,0 +1,3 @@
+{
+        "conversation": {"@id": "http://ostatus.org#conversation", "@type": "@id"}
+}
