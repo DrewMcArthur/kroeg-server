@@ -52,20 +52,49 @@ fn audience_for_object<T: EntityStore>(
     store: T,
 ) -> Result<(Context, StoreItem, T, HashSet<String>), T::Error> {
     let mut boxes = HashSet::new();
-    let mut audience = Vec::new();
-    for vals in &[as2!(to), as2!(bto), as2!(cc), as2!(bcc), as2!(audience)] {
+    let mut audience: Vec<(usize, String, bool)> = Vec::new();
+    for vals in &[as2!(to), as2!(bto), as2!(cc), as2!(bcc), as2!(audience), as2!(actor)] {
         for item in &obj.main()[vals] {
             if let Pointer::Id(id) = item {
-                audience.push((0, id.to_owned()));
+                audience.push((0, id.to_owned(), false));
             }
         }
     }
 
+    let user_follower = if let Some(user) = await!(store.get(context.user.subject.to_owned(), true))? {
+        if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
+            Some(id.to_owned())
+        } else {
+            None
+        }
+    } else { None };
+
     while audience.len() > 0 {
-        let (depth, item) = audience.remove(0);
+        let (depth, item, is_shared) = audience.remove(0);
         let item = await!(store.get(item, false))?;
         if let Some(item) = item {
             if !item.is_owned(&context) {
+                let mut has_shared = false;
+                if is_shared {
+                    for endpoint in item.main()[as2!(endpoints)].clone() {
+                        if let Pointer::Id(endpoint) = endpoint {
+                            let elem = if endpoint.starts_with("_:") {
+                                item.sub(&endpoint).unwrap().clone()
+                            } else {
+                                await!(store.get(endpoint, true))?.unwrap().main().clone()
+                            };
+                            for inbox in elem[as2!(sharedInbox)].clone() {
+                                if let Pointer::Id(inbox) = inbox {
+                                    boxes.insert(inbox);
+                                    has_shared = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if has_shared { continue }
+
                 for inbox in &item.main()[ldp!(inbox)] {
                     if let Pointer::Id(inbox) = inbox {
                         boxes.insert(inbox.to_owned());
@@ -79,8 +108,8 @@ fn audience_for_object<T: EntityStore>(
                 {
                     let data =
                         await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
-                    for item in data.items {
-                        audience.push((0, item));
+                    for fitem in data.items {
+                        audience.push((0, fitem, user_follower.as_ref().map(|f| f == item.id()).unwrap_or(false)));
                     }
                 }
 
