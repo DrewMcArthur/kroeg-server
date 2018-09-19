@@ -58,8 +58,8 @@ pub fn account<T: EntityStore>(
     store: T,
     id: String,
 ) -> Result<(T, Option<structs::Account>), T::Error> {
-    println!("Reading {:?} {:?}", store, id);
-    let elem = match await!(store.get(id, true))? {
+    println!("Translating account {:?}", id);
+    let elem = match await!(store.get(id, false))? {
         Some(val) => val,
         None => return Ok((store, None)),
     };
@@ -124,10 +124,12 @@ pub fn reblog_status<T: EntityStore>(
     store: T,
     elem: StoreItem
 ) -> Result<(T, Option<structs::Status>), T::Error> {
+
     let object = match best_id(&elem.main()[as2!(object)]) {
         Some(val) => val,
         None => return Ok((store, None))
     };
+    println!("Translating announce-status {:?} -> {:?}", elem.main().id, object);
 
     let (store, status) = await!(status(store, object))?;
     let status = match status {
@@ -153,10 +155,12 @@ pub fn status<T: EntityStore>(
     store: T,
     id: String,
 ) -> Result<(T, Option<structs::Status>), T::Error> {
-    let mut elem = match await!(store.get(id, true))? {
+    let mut elem = match await!(store.get(id, false))? {
         Some(val) => val,
         None => return Ok((store, None)),
     };
+
+    println!("{:?}", elem.main().types);
 
     if elem.main().types.contains(&String::from(as2!(Announce))) {
         return await!(reblog_status(store, elem));
@@ -168,7 +172,7 @@ pub fn status<T: EntityStore>(
             None => return Ok((store, None))
         };
 
-        elem = match await!(store.get(object, true))? {
+        elem = match await!(store.get(object, false))? {
             Some(val) => val,
             None => return Ok((store, None))
         };
@@ -177,6 +181,8 @@ pub fn status<T: EntityStore>(
     if !elem.main().types.contains(&String::from(as2!(Note))) {
         return Ok((store, None));
     }
+
+    println!("Translating status {:?}", elem.main().id);
 
     let url = best_id(&elem.main()[as2!(url)]);
     let (store, account) = await!(account(store, best_id(&elem.main()[as2!(attributedTo)]).unwrap()))?;

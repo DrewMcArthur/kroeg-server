@@ -19,7 +19,7 @@ pub fn route<T: EntityStore>(
 ) -> Result<(Response<Body>, T), T::Error> {
     if request.uri().path().starts_with("/oauth") {
         await!(oauth::route(context, request, store))
-    } else if request.uri().path().starts_with("/api/v1/account/") {
+    } else if request.uri().path().starts_with("/api/v1/accounts/") {
         await!(account::route(context, request, store))
     } else if request.uri().path().starts_with("/api/v1/statuses/") {
         await!(statuses::route(context, request, store))

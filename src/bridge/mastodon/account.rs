@@ -45,7 +45,7 @@ pub fn route<T: EntityStore>(
 ) -> Result<(Response<Body>, T), T::Error> {
     println!("routed into account");
     let (path, message_type) = {
-	let parts: Vec<_> = request.uri().path()[16..].split('/').collect();
+	let parts: Vec<_> = request.uri().path()[17..].split('/').collect();
 	match parts.len() {
             1 => (translate::decode_id(parts[0].to_string()), RequestType::Normal),
             2 => if let Some(val) = RequestType::parse(&parts[1]) {
