@@ -4,6 +4,7 @@ use futures::{
 };
 
 use context::HyperContextLoader;
+use super::context;
 use hyper;
 use hyper::{Body, Client, Request, StatusCode, Uri};
 use hyper_tls::HttpsConnector;
@@ -142,7 +143,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                                         eprintln!(" done");
                                         match from_slice(&val) { Ok(res) => {
                                             Box::new(expand::<HyperContextLoader>(
-                                                res,
+                                                context::apply_supplement(res),
                                                 JsonLdOptions {
                                                     base: None,
                                                     compact_arrays: None,
