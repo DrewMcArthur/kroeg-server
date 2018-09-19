@@ -278,7 +278,7 @@ impl Service for KroegService {
                             .unwrap())
                     } else {
                         Ok(Response::builder()
-                            .status(500)
+                            .status(202)
                             .body(Body::from(err.to_string()))
                             .unwrap())
                     }
