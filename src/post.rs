@@ -15,6 +15,7 @@ use kroeg_tap::{assemble, assign_ids, untangle, DefaultAuthorizer, MessageHandle
 use kroeg_tap_activitypub::handlers;
 
 use super::delivery::register_delivery;
+use super::context;
 
 use std::collections::{HashMap, HashSet};
 
@@ -121,7 +122,7 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
         run_handlers! {
             context, store, inbox.to_owned(), id,
             handlers::AutomaticCreateHandler,
-            handlers::VerifyRequiredEventsHandler,
+            handlers::VerifyRequiredEventsHandler(true),
             handlers::ClientCreateHandler,
             handlers::CreateActorHandler,
             handlers::ClientLikeHandler,
@@ -145,8 +146,9 @@ fn run_handlers<T: EntityStore, R: QueueStore>(
         let id = root;
         run_handlers! {
             context, store, inbox.to_owned(), id,
-            handlers::VerifyRequiredEventsHandler,
-            handlers::ServerCreateHandler
+            handlers::VerifyRequiredEventsHandler(false),
+            handlers::ServerCreateHandler,
+            handlers::ServerFollowHandler
         }
     } else {
         return Err(ServerError::PostToNonbox);
@@ -229,7 +231,7 @@ pub fn process<T: EntityStore, R: QueueStore>(
 
                 Box::new(
                     expand::<HyperContextLoader>(
-                        data,
+                        context::apply_supplement(data),
                         JsonLdOptions {
                             base: None,
                             compact_arrays: None,
