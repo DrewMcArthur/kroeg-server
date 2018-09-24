@@ -7,13 +7,15 @@ use hyper::{
 use hyper_tls::HttpsConnector;
 
 use kroeg_tap::{EntityStore, StoreItem};
+use std::time::{Duration, Instant};
+use tokio::timer::Deadline;
 
 /// A Future that will follow an amount of requests
 /// before retunring the response.
 pub struct HyperLDRequest {
     client: Client<HttpsConnector<HttpConnector>>,
     requests_left: u32,
-    current_future: ResponseFuture,
+    current_future: Deadline<ResponseFuture>,
 }
 
 impl Future for HyperLDRequest {
@@ -39,7 +41,10 @@ impl Future for HyperLDRequest {
                          .unwrap();
 
                         self.requests_left -= 1;
-                        self.current_future = self.client.request(request);
+                        self.current_future = Deadline::new(
+                            self.client.request(request),
+                            Instant::now() + Duration::from_millis(7000),
+                        );
                         continue;
                     }
 
@@ -47,7 +52,11 @@ impl Future for HyperLDRequest {
                 }
 
                 Ok(Async::NotReady) => Ok(Async::NotReady),
-                Err(e) => Err(e),
+                Err(e) => if e.is_elapsed() {
+                    Ok(Async::Ready(None))
+                } else {
+                    Err(e.into_inner().unwrap())
+                },
             };
         }
     }
@@ -62,7 +71,10 @@ impl HyperLDRequest {
 
         let connector = HttpsConnector::new(1).unwrap();
         let client = Client::builder().build(connector);
-        let future = client.request(request);
+        let future = Deadline::new(
+            client.request(request),
+            Instant::now() + Duration::from_millis(7000),
+        );
 
         HyperLDRequest {
             client: client,

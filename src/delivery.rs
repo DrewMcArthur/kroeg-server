@@ -170,7 +170,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
             let (context, data) = await!(compact_with_context(context, data)).unwrap();
 
-            let is_local = match await!(store.get(uri.to_owned(), false)) {
+            let is_local = match await!(store.get(uri.to_owned(), true)) {
                 Ok(Some(val)) => val.is_owned(&context),
                 Ok(None) => false,
                 Err(err) => return Err((context, client, store, item, err)),
