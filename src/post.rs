@@ -49,7 +49,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
             if let Some(mut item) = item {
                 let user_inoutbox = item.id().to_owned();
                 let is_box = &item.meta()[kroeg!(box)];
-                let is_inbox = is_box.contains(&Pointer::Id(as2!(inbox).to_owned()));
+                let is_inbox = is_box.contains(&Pointer::Id(ldp!(inbox).to_owned()));
                 let is_outbox = is_box.contains(&Pointer::Id(as2!(outbox).to_owned()));
                 let root = val
                     .as_array()
