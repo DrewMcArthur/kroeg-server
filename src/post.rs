@@ -1,6 +1,7 @@
 use context;
 use context::HyperContextLoader;
 use futures::future::{self, Either};
+use futures::prelude::{await, *};
 use futures::{stream, Future, Stream};
 use hyper::{Body, Request, Response, Uri};
 use jsonld::nodemap::Pointer;
@@ -9,8 +10,113 @@ use kroeg_tap::{assign_ids, untangle, Context, EntityStore, MessageHandler, Queu
 use kroeg_tap_activitypub::handlers;
 use request::StoreAllFuture;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use ServerError;
+
+#[async]
+fn prepare_delivery<T: EntityStore, Q: QueueStore>(
+    context: Context,
+    id: String,
+    store: T,
+    queue: Q,
+) -> Result<(Context, String, T, Q), T::Error> {
+    let obj = await!(store.get(id, true))?.unwrap();
+    let mut boxes = HashSet::new();
+    let mut audience: Vec<(usize, String, bool)> = Vec::new();
+    for vals in &[
+        as2!(to),
+        as2!(bto),
+        as2!(cc),
+        as2!(bcc),
+        as2!(audience),
+        as2!(actor),
+    ] {
+        for item in &obj.main()[vals] {
+            if let Pointer::Id(id) = item {
+                audience.push((0, id.to_owned(), false));
+            }
+        }
+    }
+
+    let user_follower =
+        if let Some(user) = await!(store.get(context.user.subject.to_owned(), true))? {
+            if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
+                Some(id.to_owned())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    while audience.len() > 0 {
+        let (depth, item, is_shared) = audience.remove(0);
+        let item = await!(store.get(item, false))?;
+        if let Some(item) = item {
+            if !item.is_owned(&context) {
+                let mut has_shared = false;
+                if is_shared {
+                    for endpoint in item.main()[as2!(endpoints)].clone() {
+                        if let Pointer::Id(endpoint) = endpoint {
+                            let elem = if endpoint.starts_with("_:") {
+                                item.sub(&endpoint).unwrap().clone()
+                            } else {
+                                await!(store.get(endpoint, true))?.unwrap().main().clone()
+                            };
+                            for inbox in elem[as2!(sharedInbox)].clone() {
+                                if let Pointer::Id(inbox) = inbox {
+                                    boxes.insert(inbox);
+                                    has_shared = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if has_shared {
+                    continue;
+                }
+
+                for inbox in &item.main()[ldp!(inbox)] {
+                    if let Pointer::Id(inbox) = inbox {
+                        boxes.insert(inbox.to_owned());
+                    }
+                }
+            } else {
+                if item
+                    .main()
+                    .types
+                    .contains(&String::from(as2!(OrderedCollection)))
+                {
+                    let data =
+                        await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
+                    for fitem in data.items {
+                        audience.push((
+                            0,
+                            fitem,
+                            user_follower
+                                .as_ref()
+                                .map(|f| f == item.id())
+                                .unwrap_or(false),
+                        ));
+                    }
+                }
+
+                for inbox in &item.main()[ldp!(inbox)] {
+                    if let Pointer::Id(inbox) = inbox {
+                        boxes.insert(inbox.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    for send_to in boxes.into_iter() {
+        await!(queue.add("deliver".to_owned(), format!("{} {}", obj.id(), send_to))).unwrap();
+    }
+
+    Ok((context, obj.id().to_owned(), store, queue))
+}
 
 pub fn post<T: EntityStore, Q: QueueStore>(
     context: Context,
@@ -139,7 +245,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
 
             let id = roots.into_iter().next();
             if id.is_none() {
-                return Either::A(future::ok((context, store, None, user_inoutbox)));
+                return Either::A(Either::A(future::ok((context, store, queue, None, user_inoutbox))));
             }
 
             let id = id.unwrap();
@@ -154,8 +260,18 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                 },
             );
 
-            Either::B(end.map(|((context, store, id), user_inoutbox)| (context, store, Some(id), user_inoutbox)))
-        }).and_then(move |(_, mut store, id, user_inoutbox)| {
+            if is_inbox {
+                Either::B(end.map(move |((context, store, id), user_inoutbox)| (context, store, queue, Some(id), user_inoutbox)))
+            } else {
+                Either::A(Either::B(
+                    end.and_then(|((context, store, id), user_inoutbox)|
+                        prepare_delivery(context, id, store, queue)
+                        .map_err(ServerError::StoreError)
+                        .map(move |(context, id, store, queue)| (context, store, queue, Some(id), user_inoutbox))
+                    )
+                ))
+            }
+        }).and_then(|(_, mut store, queue, id, user_inoutbox)| {
             if let Some(id) = id {
                 Either::A(
                     store.insert_collection(user_inoutbox, id.to_owned())
