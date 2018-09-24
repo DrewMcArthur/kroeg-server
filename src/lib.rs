@@ -1,4 +1,4 @@
-#![feature(generators)]
+#![feature(generators, use_extern_macros)]
 
 #[macro_use]
 extern crate serde_derive;

@@ -7,7 +7,7 @@ use futures::{
 use super::context;
 use context::HyperContextLoader;
 use hyper;
-use hyper::{Body, Uri};
+use hyper::{Body, StatusCode, Uri};
 use jsonld::{error::ExpansionError, expand, JsonLdOptions};
 use kroeg_tap::{untangle, CollectionPointer, EntityStore, StoreItem};
 use request::HyperLDRequest;
@@ -78,9 +78,15 @@ fn expand_and_unflatten<T: EntityStore>(
     body.concat2()
         .map_err(RetrievingEntityStoreError::HyperError)
         .and_then(|value| {
-            from_slice(value.as_ref())
-                .map_err(RetrievingEntityStoreError::SerdeError)
-                .into_future()
+            if value.as_ref().len() == 0 {
+                Either::A(future::ok(json!([])))
+            } else {
+                Either::B(
+                    from_slice(value.as_ref())
+                        .map_err(RetrievingEntityStoreError::SerdeError)
+                        .into_future(),
+                )
+            }
         }).and_then(|value| {
             expand::<HyperContextLoader>(
                 context::apply_supplement(value),
@@ -108,7 +114,11 @@ fn retrieve_and_store<T: EntityStore>(
         .map_err(RetrievingEntityStoreError::HyperError)
         .and_then(move |res| {
             if let Some(res) = res {
-                Either::A(expand_and_unflatten(item, res.into_body()))
+                if res.status() != StatusCode::OK {
+                    Either::B(future::ok(HashMap::new()))
+                } else {
+                    Either::A(expand_and_unflatten(item, res.into_body()))
+                }
             } else {
                 Either::B(future::ok(HashMap::new()))
             }
