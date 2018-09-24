@@ -27,11 +27,12 @@ use futures::prelude::{await, *};
 use jsonld::nodemap::{Pointer, Value};
 use kroeg_cellar::QuadClient;
 use kroeg_tap::{untangle, Context, EntityStore, MessageHandler, User};
-use kroeg_tap_activitypub::handlers::{CreateActorError, CreateActorHandler};
+use kroeg_tap_activitypub::handlers::CreateActorHandler;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
 use serde_json::Value as JValue;
 use std::collections::HashMap;
 use std::env;
+use std::error::Error;
 use std::fs::File;
 use std::io::Read;
 
@@ -116,7 +117,7 @@ fn create_user<T: EntityStore + 'static>(
     id: String,
     name: String,
     username: String,
-) -> Result<(), CreateActorError<T>> {
+) -> Result<(), Box<Error + Send + Sync + 'static>> {
     let user = json!(
         {
             "@id": id.to_owned(),
@@ -129,7 +130,7 @@ fn create_user<T: EntityStore + 'static>(
     let mut untangled = untangle(user).unwrap();
     for (key, value) in untangled {
         println!("Storing {:?} {:?}", key, value);
-        await!(store.put(key, value)).map_err(CreateActorError::EntityStoreError)?;
+        await!(store.put(key, value)).map_err(Box::new)?;
     }
 
     let config = read_config();

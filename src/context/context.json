@@ -1,5 +1,5 @@
 {
-  "@context": ["https://web-payments.org/contexts/security-v1.jsonld", {
+  "@context": ["https://w3id.org/security/v1", {
     "kroeg": "https://puckipedia.com/kroeg/ns#",
 
     "NotFound": "kroeg:NotFound",

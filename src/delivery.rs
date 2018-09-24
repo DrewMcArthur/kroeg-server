@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio::prelude::*;
 use tokio::timer::Delay;
 
-use super::compact_with_context;
+use context;
 use hyper::client::HttpConnector;
 use hyper::{
     header::{HeaderMap, HeaderValue},
@@ -16,6 +16,7 @@ use hyper::{
 };
 use hyper_tls::HttpsConnector;
 use jsonld::nodemap::Pointer;
+use jsonld::{compact, error::CompactionError, JsonLdOptions};
 use kroeg_tap::StoreItem;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
 use serde_json::Value as JValue;
@@ -24,9 +25,28 @@ pub fn escape(s: &str) -> String {
     s.replace("\\", "\\\\").replace(" ", "\\s")
 }
 
+#[async]
+pub fn compact_with_context(
+    context: Context,
+    val: JValue,
+) -> Result<(Context, JValue), CompactionError<context::HyperContextLoader>> {
+    let val = await!(compact::<context::HyperContextLoader>(
+        val,
+        context::outgoing_context(&context),
+        JsonLdOptions {
+            base: None,
+            compact_arrays: Some(true),
+            expand_context: None,
+            processing_mode: None,
+        }
+    ))?;
+
+    Ok((context, val))
+}
+
 pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Body>) {
     let digest = Sha256::digest_str(data);
-    let digest = base64::encode_config(&digest, base64::STANDARD_NO_PAD);
+    let digest = base64::encode_config(&digest, base64::STANDARD);
 
     req.headers_mut()
         .insert("Digest", format!("SHA-256={}", digest).parse().unwrap());
@@ -82,7 +102,7 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
     }
 
     signer.update(signed.as_bytes()).unwrap();
-    let signature = base64::encode_config(&signer.sign_to_vec().unwrap(), base64::STANDARD_NO_PAD);
+    let signature = base64::encode_config(&signer.sign_to_vec().unwrap(), base64::STANDARD);
 
     req.headers_mut().insert(
         "Signature",
@@ -118,7 +138,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 > {
     match item.event() {
         "deliver" => {
-            println!(" ║ delivering {:?}", item.data());
+            println!(" [+] delivering {:?}", item.data());
             // bad. urlencode instead.
             let mut data: Vec<_> = item
                 .data()
@@ -213,8 +233,7 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
     mut store: T,
     queue: R,
 ) -> Result<(), ()> {
-    println!(" ╔ delivery started\n ╚ ready...");
-
+    println!("[+] Delivery thread start");
     let connector = HttpsConnector::new(1).unwrap();
     let mut client = Client::builder().build::<_, Body>(connector);
 
@@ -222,21 +241,18 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
         let item = await!(queue.get_item()).unwrap();
         match item {
             Some(val) => {
-                println!(" ╔ got {}", val.event());
                 match await!(deliver_one::<T, R>(context, client, store, val)) {
                     Ok((co, cl, s, item)) => {
                         context = co;
                         client = cl;
                         store = s;
                         await!(queue.mark_success(item)).unwrap();
-                        println!(" ╚ success");
                     }
                     Err((co, cl, s, item, e)) => {
                         context = co;
                         client = cl;
                         store = s;
                         await!(queue.mark_failure(item)).unwrap();
-                        println!(" ╚ failure");
 
                         return Err(());
                     }
@@ -244,11 +260,8 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
             }
 
             None => {
-                println!(" ╔ found nothing\n ╚ waiting...");
                 await!(Delay::new(Instant::now() + Duration::from_millis(10000))).unwrap();
             }
         };
     }
-
-    Ok(())
 }

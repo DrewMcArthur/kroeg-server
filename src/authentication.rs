@@ -181,27 +181,6 @@ pub fn user_from_request<R: EntityStore>(
                 return Ok((config, req, store, user));
             }
         }
-        /*
-        let mut claims = HashMap::new();
-        if config.server.admins.contains(&String::from(val.to_owned())) {
-            claims.insert("admin".to_owned(), "1".to_owned());
-        }
-
-        let uri = config.server.base_uri.to_owned();
-
-        return Ok((
-            config,
-            req,
-            store,
-            User {
-                claims: claims,
-                issuer: Some(uri.to_owned()),
-                subject: val.to_owned(),
-                audience: vec![uri.to_owned()],
-                token_identifier: "dyngen".to_owned(),
-            },
-        ));
-        */
     }
 
     await!(verify_http_signature(req, store).map(|(req, store, data)| (

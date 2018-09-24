@@ -1,266 +1,32 @@
-//! Code to handle GET requests for a server.
-
-use futures::future;
-use futures::prelude::{await, *};
-
+use context;
+use context::HyperContextLoader;
+use futures::future::{self, Either};
+use futures::{stream, Future, Stream};
 use hyper::{Body, Request, Response, Uri};
-use kroeg_tap::{Context, EntityStore, StoreItem};
-use serde_json::{from_slice, Value};
-
-use super::context::HyperContextLoader;
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
-
-use kroeg_tap::{assemble, assign_ids, untangle, DefaultAuthorizer, MessageHandler, QueueStore};
+use kroeg_tap::{assign_ids, untangle, Context, EntityStore, MessageHandler, QueueStore};
 use kroeg_tap_activitypub::handlers;
+use request::StoreAllFuture;
+use serde_json;
+use std::collections::HashMap;
+use ServerError;
 
-use super::delivery::register_delivery;
-use super::context;
-
-use std::collections::{HashMap, HashSet};
-
-use super::ServerError;
-
-macro_rules! run_handlers {
-    ($context:expr, $store:expr, $inbox:expr, $id:expr, $($exp:expr),*) => {
-        {
-        let mut context = $context;
-        let mut store = $store;
-        let inbox = $inbox;
-        let mut id = $id;
-        println!(" ┃ handlers start");
-        $({
-            println!(" ┃ handlers: {}", stringify!($exp));
-            let item = $exp;
-            let (ncontext, nstore, nid) = await!(item.handle(context, store, inbox.to_owned(), id))
-                .map_err(|e| ServerError::HandlerError(Box::new(e)))?;
-            id = nid;
-            context = ncontext;
-            store = nstore;
-        })*
-
-        println!(" ┃ handlers end");
-        (context, store, id)
-        }
-    };
-}
-
-#[async]
-fn audience_for_object<T: EntityStore>(
-    context: Context,
-    obj: StoreItem,
-    store: T,
-) -> Result<(Context, StoreItem, T, HashSet<String>), T::Error> {
-    let mut boxes = HashSet::new();
-    let mut audience: Vec<(usize, String, bool)> = Vec::new();
-    for vals in &[as2!(to), as2!(bto), as2!(cc), as2!(bcc), as2!(audience), as2!(actor)] {
-        for item in &obj.main()[vals] {
-            if let Pointer::Id(id) = item {
-                audience.push((0, id.to_owned(), false));
-            }
-        }
-    }
-
-    let user_follower = if let Some(user) = await!(store.get(context.user.subject.to_owned(), true))? {
-        if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
-            Some(id.to_owned())
-        } else {
-            None
-        }
-    } else { None };
-
-    while audience.len() > 0 {
-        let (depth, item, is_shared) = audience.remove(0);
-        let item = await!(store.get(item, false))?;
-        if let Some(item) = item {
-            if !item.is_owned(&context) {
-                let mut has_shared = false;
-                if is_shared {
-                    for endpoint in item.main()[as2!(endpoints)].clone() {
-                        if let Pointer::Id(endpoint) = endpoint {
-                            let elem = if endpoint.starts_with("_:") {
-                                item.sub(&endpoint).unwrap().clone()
-                            } else {
-                                await!(store.get(endpoint, true))?.unwrap().main().clone()
-                            };
-                            for inbox in elem[as2!(sharedInbox)].clone() {
-                                if let Pointer::Id(inbox) = inbox {
-                                    boxes.insert(inbox);
-                                    has_shared = true;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if has_shared { continue }
-
-                for inbox in &item.main()[ldp!(inbox)] {
-                    if let Pointer::Id(inbox) = inbox {
-                        boxes.insert(inbox.to_owned());
-                    }
-                }
-            } else {
-                if item
-                    .main()
-                    .types
-                    .contains(&String::from(as2!(OrderedCollection)))
-                {
-                    let data =
-                        await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
-                    for fitem in data.items {
-                        audience.push((0, fitem, user_follower.as_ref().map(|f| f == item.id()).unwrap_or(false)));
-                    }
-                }
-
-                for inbox in &item.main()[ldp!(inbox)] {
-                    if let Pointer::Id(inbox) = inbox {
-                        boxes.insert(inbox.to_owned());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok((context, obj, store, boxes))
-}
-
-#[async(boxed_send)]
-fn run_handlers<T: EntityStore, R: QueueStore>(
+pub fn post<T: EntityStore, Q: QueueStore>(
     context: Context,
     store: T,
-    mut queue: R,
-    inbox: String,
-    expanded: Value,
-) -> Result<(T, R, Response<Value>), ServerError<T>> {
-    let user = Some(context.user.subject.to_owned());
-    let mut source = await!(store.get(inbox.to_owned(), false))
-        .map_err(ServerError::StoreError)?
-        .unwrap();
-    let mut is_outbox = false;
-    let (mut context, mut store, id) = if source.meta()[kroeg!(box)]
-        .contains(&Pointer::Id(as2!(outbox).to_owned()))
-    {
-        is_outbox = true;
-        let mut untangled = untangle(expanded).unwrap();
-        let (context, store, mut roots, data) =
-            await!(assign_ids(context, store, user, untangled)).map_err(ServerError::StoreError)?;
-        let store = await!(store_all(store, data)).map_err(ServerError::StoreError)?;
-        let id = roots.remove(0);
+    queue: Q,
+    request: Request<Body>,
+) -> impl Future<Item = (T, Q, Response<serde_json::Value>), Error = ServerError<T>> {
+    let id = format!("{}{}", context.server_base, request.uri().path());
 
-        run_handlers! {
-            context, store, inbox.to_owned(), id,
-            handlers::AutomaticCreateHandler,
-            handlers::VerifyRequiredEventsHandler(true),
-            handlers::ClientCreateHandler,
-            handlers::CreateActorHandler,
-            handlers::ClientLikeHandler,
-            handlers::ClientUndoHandler
-        }
-    } else if source.meta()[kroeg!(box)].contains(&Pointer::Id(ldp!(inbox).to_owned())) {
-        let host = {
-            let host = context.user.subject.parse::<Uri>().unwrap();
-            host.authority_part().unwrap().clone()
-        };
-        let root = expanded.as_array().unwrap()[0].as_object().unwrap()["@id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let mut untangled = untangle(expanded).unwrap();
-        untangled.retain(|k, v| k.parse::<Uri>().unwrap().authority_part().unwrap() == &host);
-        if !untangled.contains_key(&root) {
-            return Err(ServerError::BadSharedInbox);
-        }
-        let store = await!(store_all(store, untangled)).map_err(ServerError::StoreError)?;
-        let id = root;
-        run_handlers! {
-            context, store, inbox.to_owned(), id,
-            handlers::VerifyRequiredEventsHandler(false),
-            handlers::ServerCreateHandler,
-            handlers::ServerFollowHandler
-        }
-    } else {
-        return Err(ServerError::PostToNonbox);
-    };
-
-    await!(store.insert_collection(inbox.to_owned(), id.to_owned()))
-        .map_err(ServerError::StoreError)?;
-
-    let mut item = await!(store.get(id.to_owned(), false))
-        .map_err(ServerError::StoreError)?
-        .unwrap();
-
-    if is_outbox {
-        println!(" ┃ Preparing delivery..");
-        let (c, i, s, boxes) =
-            await!(audience_for_object(context, item, store)).map_err(ServerError::StoreError)?;
-        context = c;
-        item = i;
-        store = s;
-
-        for inbox in boxes {
-            println!(" ┃ Delivering to {}", inbox);
-            queue = await!(register_delivery(queue, item.id().to_owned(), inbox)).unwrap();
-        }
-    }
-
-    Ok((
-        store,
-        queue,
-        Response::builder()
-            .status(201)
-            .header("Location", &id as &str)
-            .header(
-                "Content-Type",
-                "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
-            ).body(json!({ "@id": id }))
-            .unwrap(),
-    ))
-}
-
-#[async]
-fn store_all<T: EntityStore>(
-    mut store: T,
-    items: HashMap<String, StoreItem>,
-) -> Result<T, T::Error> {
-    for (key, mut value) in items {
-        let item = await!(store.get(key.to_owned(), true))?;
-        if let Some(mut item) = item {
-            if item.meta()[kroeg!(instance)] != value.meta()[kroeg!(instance)] {
-                println!("not storing {} because self-bug", item.id());
-                continue;
-            }
-        }
-        await!(store.put(key, value))?;
-    }
-
-    Ok(store)
-}
-
-pub fn process<T: EntityStore, R: QueueStore>(
-    context: Context,
-    store: T,
-    queue: R,
-    req: Request<Body>,
-) -> impl Future<Item = (T, R, Response<Value>), Error = ServerError<T>> {
-    let uri = req.uri().to_owned();
-    let name = format!("{}{}", context.server_base, uri.path());
-
-    println!(" ┗ POST {}", name);
-
-    let body = req.into_body();
-    body.concat2()
-        .map_err(|e| ServerError::HyperError(e))
-        .and_then(
-            |val| -> Box<Future<Item = Value, Error = ServerError<T>> + Send> {
-                let data: Value = match from_slice(val.as_ref()) {
-                    Ok(data) => data,
-                    Err(err) => return Box::new(future::err(ServerError::SerdeError(err))),
-                };
-
-                Box::new(
+    let (_, body) = request.into_parts();
+    let expanded =
+        body.concat2().map_err(ServerError::HyperError).and_then(
+            |val| match serde_json::from_slice(val.as_ref()).map(context::apply_supplement) {
+                Ok(value) => Either::A(
                     expand::<HyperContextLoader>(
-                        context::apply_supplement(data),
+                        context::apply_supplement(value),
                         JsonLdOptions {
                             base: None,
                             compact_arrays: None,
@@ -268,7 +34,146 @@ pub fn process<T: EntityStore, R: QueueStore>(
                             processing_mode: None,
                         },
                     ).map_err(ServerError::ExpansionError),
-                )
+                ),
+                Err(e) => Either::B(future::err(ServerError::SerdeError(e))),
             },
-        ).and_then(|expanded| run_handlers(context, store, queue, name, expanded))
+        );
+
+    expanded
+        .and_then(move |val| {
+            store
+                .get(id, true)
+                .map(|item| (store, val, item))
+                .map_err(ServerError::StoreError)
+        }).and_then(move |(store, val, item)| {
+            if let Some(mut item) = item {
+                let user_inoutbox = item.id().to_owned();
+                let is_box = &item.meta()[kroeg!(box)];
+                let is_inbox = is_box.contains(&Pointer::Id(as2!(inbox).to_owned()));
+                let is_outbox = is_box.contains(&Pointer::Id(as2!(outbox).to_owned()));
+                let root = val
+                    .as_array()
+                    .and_then(|f| f.get(0))
+                    .and_then(|f| f.as_object())
+                    .and_then(|f| f.get("@id"))
+                    .and_then(|f| f.as_str())
+                    .map(|f| f.to_owned());
+
+                if (!is_inbox && !is_outbox) || (is_inbox && is_outbox) {
+                    return Either::B(future::ok((
+                        false,
+                        context,
+                        store,
+                        vec![],
+                        HashMap::new(),
+                        user_inoutbox,
+                    )));
+                }
+
+                let mut untangled = untangle(val).unwrap();
+                if is_inbox {
+                    // Inboxes, aka server-to-server, we do not trust anything
+                    // that isn't on the same origin as the authorized user.
+
+                    let mut root = root.unwrap();
+                    let user: Uri = context.user.subject.parse().unwrap();
+                    let authority = user.authority_part().cloned();
+                    untangled.retain(|k, _| {
+                        k.parse::<Uri>()
+                            .ok()
+                            .and_then(|f| f.authority_part().cloned())
+                            == authority
+                    });
+                    Either::B(future::ok((
+                        is_inbox,
+                        context,
+                        store,
+                        vec![root],
+                        untangled,
+                        user_inoutbox,
+                    )))
+                } else {
+                    // Outboxes, on the other hand, we do not trust any incoming
+                    // IDs, and generate our own.
+                    let user = context.user.subject.to_owned();
+                    Either::A(
+                        assign_ids(context, store, Some(user), untangled)
+                            .map(move |(context, store, roots, untangled)| {
+                                (is_inbox, context, store, roots, untangled, user_inoutbox)
+                            }).map_err(ServerError::StoreError),
+                    )
+                }
+            } else {
+                Either::B(future::ok((
+                    false,
+                    context,
+                    store,
+                    vec![],
+                    HashMap::new(),
+                    String::new(),
+                )))
+            }
+        }).and_then(
+            |(is_inbox, context, store, roots, untangled, user_inoutbox)| {
+                StoreAllFuture::new(store, untangled.into_iter().map(|(_, v)| v).collect())
+                    .map(move |store| (is_inbox, context, store, roots, user_inoutbox))
+                    .map_err(ServerError::StoreError)
+            },
+        ).and_then(move |(is_inbox, context, store, roots, user_inoutbox)| {
+            let handlers: Vec<Box<MessageHandler<T>>> = if is_inbox {
+                vec![
+                    Box::new(handlers::VerifyRequiredEventsHandler(false)),
+                    Box::new(handlers::ServerCreateHandler),
+                    Box::new(handlers::ServerFollowHandler),
+                ]
+            } else {
+                vec![
+                    Box::new(handlers::AutomaticCreateHandler),
+                    Box::new(handlers::VerifyRequiredEventsHandler(true)),
+                    Box::new(handlers::ClientCreateHandler),
+                    Box::new(handlers::CreateActorHandler),
+                    Box::new(handlers::ClientLikeHandler),
+                    Box::new(handlers::ClientUndoHandler),
+                ]
+            };
+
+            let id = roots.into_iter().next();
+            if id.is_none() {
+                return Either::A(future::ok((context, store, None, user_inoutbox)));
+            }
+
+            let id = id.unwrap();
+
+            let end = stream::iter_ok(handlers.into_iter()).fold(
+                ((context, store, id), user_inoutbox),
+                |((context, store, id), user_inoutbox), handler| {
+                    handler
+                        .handle(context, store, user_inoutbox.to_owned(), id)
+                        .map(|data| (data, user_inoutbox))
+                        .map_err(|e| ServerError::HandlerError(e))
+                },
+            );
+
+            Either::B(end.map(|((context, store, id), user_inoutbox)| (context, store, Some(id), user_inoutbox)))
+        }).and_then(move |(_, mut store, id, user_inoutbox)| {
+            if let Some(id) = id {
+                Either::A(
+                    store.insert_collection(user_inoutbox, id.to_owned())
+                        .map(move |_| (store, queue, Response::builder()
+                            .status(201)
+                            .header("Location", &id as &str)
+                            .header("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"")
+                            .body(json!({ "@id": id }))
+                            .unwrap()))
+                        .map_err(ServerError::StoreError)
+                )
+            } else {
+                Either::B(future::ok((store, queue,
+                    Response::builder()
+                        .status(404)
+                        .body(json!({ "@type": [kroeg!(NotFound)] }))
+                        .unwrap()
+                )))
+            }
+        })
 }

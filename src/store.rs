@@ -1,24 +1,21 @@
 use futures::{
     future,
+    future::Either,
     prelude::{await, *},
 };
 
-use context::HyperContextLoader;
 use super::context;
+use context::HyperContextLoader;
 use hyper;
-use hyper::{Body, Client, Error, Request, Response, StatusCode, Uri};
-use hyper_tls::HttpsConnector;
-use jsonld::RemoteContextLoader;
-use jsonld::{expand, JsonLdOptions};
-use kroeg_tap::Context;
+use hyper::{Body, Uri};
+use jsonld::{error::ExpansionError, expand, JsonLdOptions};
 use kroeg_tap::{untangle, CollectionPointer, EntityStore, StoreItem};
-use serde_json::{from_slice, Value};
+use request::HyperLDRequest;
+use serde_json::{from_slice, Error as SerdeError};
 use std::collections::HashMap;
 use std::error;
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tokio::prelude::*;
 
 #[derive(Debug)]
 pub struct RetrievingEntityStore<T: EntityStore>(Arc<Mutex<T>>, String);
@@ -26,7 +23,9 @@ pub struct RetrievingEntityStore<T: EntityStore>(Arc<Mutex<T>>, String);
 #[derive(Debug)]
 pub enum RetrievingEntityStoreError<T: EntityStore> {
     HyperError(hyper::Error),
+    SerdeError(SerdeError),
     StoreError(T::Error),
+    ExpansionError(ExpansionError<context::HyperContextLoader>),
     Rest,
 }
 
@@ -40,7 +39,9 @@ impl<T: EntityStore> fmt::Display for RetrievingEntityStoreError<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             RetrievingEntityStoreError::HyperError(e) => write!(f, "Hyper error: {}", e),
+            RetrievingEntityStoreError::SerdeError(e) => write!(f, "Serde error: {}", e),
             RetrievingEntityStoreError::StoreError(e) => write!(f, "Store error: {}", e),
+            RetrievingEntityStoreError::ExpansionError(e) => write!(f, "Expansion error: {}", e),
             RetrievingEntityStoreError::Rest => write!(f, "unknown"),
         }
     }
@@ -58,7 +59,7 @@ impl<T: EntityStore> RetrievingEntityStore<T> {
 
 #[async]
 fn store_all<T: EntityStore>(
-    mut store: Arc<Mutex<T>>,
+    store: Arc<Mutex<T>>,
     items: HashMap<String, StoreItem>,
 ) -> Result<Arc<Mutex<T>>, T::Error> {
     for (key, value) in items {
@@ -66,6 +67,52 @@ fn store_all<T: EntityStore>(
     }
 
     Ok(store)
+}
+
+fn expand_and_unflatten<T: EntityStore>(
+    id: String,
+    body: Body,
+) -> impl Future<Item = HashMap<String, StoreItem>, Error = RetrievingEntityStoreError<T>> {
+    let authority = id.parse::<Uri>().ok().map(|f| f.authority_part().cloned());
+
+    body.concat2()
+        .map_err(RetrievingEntityStoreError::HyperError)
+        .and_then(|value| {
+            from_slice(value.as_ref())
+                .map_err(RetrievingEntityStoreError::SerdeError)
+                .into_future()
+        }).and_then(|value| {
+            expand::<HyperContextLoader>(
+                context::apply_supplement(value),
+                JsonLdOptions {
+                    base: None,
+                    compact_arrays: None,
+                    expand_context: None,
+                    processing_mode: None,
+                },
+            ).map_err(RetrievingEntityStoreError::ExpansionError)
+        }).map(move |value| {
+            let mut value = untangle(value).unwrap();
+            value.retain(|k, _| {
+                k.parse::<Uri>().ok().map(|f| f.authority_part().cloned()) == authority
+            });
+            value
+        })
+}
+
+fn retrieve_and_store<T: EntityStore>(
+    item: String,
+    store: Arc<Mutex<T>>,
+) -> impl Future<Item = Arc<Mutex<T>>, Error = RetrievingEntityStoreError<T>> {
+    HyperLDRequest::new(&item)
+        .map_err(RetrievingEntityStoreError::HyperError)
+        .and_then(move |res| {
+            if let Some(res) = res {
+                Either::A(expand_and_unflatten(item, res.into_body()))
+            } else {
+                Either::B(future::ok(HashMap::new()))
+            }
+        }).and_then(move |res| store_all(store, res).map_err(RetrievingEntityStoreError::StoreError))
 }
 
 impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
@@ -77,119 +124,53 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
     type WriteCollectionFuture = Box<Future<Item = (), Error = Self::Error> + 'static + Send>;
 
     fn get(&self, path: String, local: bool) -> Self::GetFuture {
+        let future = self
+            .0
+            .lock()
+            .unwrap()
+            .get(path.to_owned(), local)
+            .map_err(RetrievingEntityStoreError::StoreError);
+        let store_copy = self.0.clone();
         let base = self.1.to_owned();
-        let clonerc = self.0.clone();
-        Box::new(
-            self.0
-                .lock()
-                .unwrap()
-                .get(path.to_owned(), local)
-                .map_err(RetrievingEntityStoreError::StoreError)
-                .and_then(move |value| {
-                    let val: Box<
-                        Future<Item = Option<StoreItem>, Error = RetrievingEntityStoreError<T>>
-                            + 'static
-                            + Send,
-                    > = match value {
-                        Some(val) => {
-                            Box::new(future::ok::<_, RetrievingEntityStoreError<T>>(Some(val)))
-                        }
-                        None => {
-                            if path.starts_with(&base) || path.starts_with("_:")
-                                || path.starts_with("https://www.w3.org/ns/activitystreams#tag")
-                                || local
-                            {
-                                Box::new(future::ok(None))
-                            } else {
-                                eprint!(" ┃ retrieving {}", path);
-                                let path = if path == "https://www.w3.org/ns/activitystreams#Public"
-                                {
-                                    "https://gist.githubusercontent.com/puckipedia/cdca8b2b213e92640118f4a2fe451c74/raw/161cba71bef63c7219597528033a0a3d9d2a62e3/bad.json".to_owned()
-                                } else {
-                                    path.to_owned()
-                                };
-                                let request = Request::get(path.to_owned())
-                                .header("Accept", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\", application/activity+json, application/json")
-                                .body(Body::default())
-                                .unwrap();
 
-                                let connector = HttpsConnector::new(1).unwrap();
-                                let client = Client::builder().build::<_, Body>(connector);
+        Box::new(if local {
+            Either::A(future)
+        } else {
+            Either::B(future.and_then(move |item| {
+                if let Some(item) = item {
+                    Either::A(future::ok(Some(item)))
+                } else {
+                    if path.starts_with(&base)
+                        || path.starts_with("_:")
+                        || path.starts_with(as2!(tag))
+                    {
+                        return Either::A(future::ok(None));
+                    }
 
-                                Box::new(
-                                    client
-                                        .request(request)
-                                        .and_then(|res| {
-                                            let boxed: Box<Future<Item = Option<hyper::Chunk>, Error = hyper::Error> + 'static + Send> = if res.status() == StatusCode::OK {
-                                            Box::new(res.into_body().concat2().map(|f| Some(f)))
-                                          } else {
-                                            Box::new(future::ok(None))
-                                          };
+                    if path == as2!(Public) {
+                        return Either::A(future::ok(
+                            StoreItem::parse(
+                                as2!(Public),
+                                json!({
+                                "@id": as2!(Public),
+                                "@type": [as2!(Collection)]
+                            }),
+                            ).ok(),
+                        ));
+                    }
 
-                                            boxed
-                                        })
-                                        .deadline(Instant::now() + Duration::from_secs(15))
-                                        .map_err(|f| {
-                                            if f.is_elapsed() {
-                                                eprintln!(" fail timeout");
-                                                RetrievingEntityStoreError::Rest
-                                            } else {
-                                                eprintln!(" fail hyper");
-                                                RetrievingEntityStoreError::HyperError(
-                                                    f.into_inner().unwrap(),
-                                                )
-                                            }
-                                        })
-                                        .then(move |val| {
-                                            let response: Box<Future<Item = Option<StoreItem>, Error = RetrievingEntityStoreError<T>> + 'static + Send> = match val { Ok(val) => if let Some(val) = val {
-                                        eprintln!(" done");
-                                        match from_slice(&val) { Ok(res) => {
-                                            Box::new(expand::<HyperContextLoader>(
-                                                context::apply_supplement(res),
-                                                JsonLdOptions {
-                                                    base: None,
-                                                    compact_arrays: None,
-                                                    expand_context: None,
-                                                    processing_mode: None,
-                                                },
-                                            ).map_err(|_| RetrievingEntityStoreError::Rest)
-                                            .and_then(move |expanded| {
-                                                let host = {
-                                                    let host = path.parse::<Uri>().unwrap();
-                                                    host.authority_part().unwrap().clone()
-                                                };
-                                                let root = expanded.as_array().unwrap()[0]
-                                                    .as_object()
-                                                    .unwrap()["@id"]
-                                                    .as_str()
-                                                    .unwrap()
-                                                    .to_owned();
-                                                let mut untangled = untangle(expanded).unwrap();
-                                                untangled.retain(|k, v| {
-                                                    k.parse::<Uri>().unwrap().authority_part().unwrap()
-                                                    == &host
-                                                });
-                                                store_all(clonerc, untangled).map_err(RetrievingEntityStoreError::StoreError).map(|store| (path, store))
-                                            })
-                                            .and_then(move |(path, store)| {
-                                                store.lock().unwrap().get(path, local).map_err(RetrievingEntityStoreError::StoreError)
-                                            }))
-                                        }
-                                        Err(_) => Box::new(future::ok(None))
-                                        }
-                                    } else {
-                                        Box::new(future::ok(None))
-                                    }, Err(RetrievingEntityStoreError::Rest) => Box::new(future::ok(None)), Err(e) => Box::new(future::err(e)) };
-
-                                            response
-                                        }),
-                                )
-                            }
-                        }
-                    };
-                    val
-                }),
-        )
+                    Either::B(retrieve_and_store(path.to_owned(), store_copy).and_then(
+                        move |store| {
+                            store
+                                .lock()
+                                .unwrap()
+                                .get(path.to_owned(), true)
+                                .map_err(RetrievingEntityStoreError::StoreError)
+                        },
+                    ))
+                }
+            }))
+        })
     }
 
     fn put(&mut self, path: String, item: StoreItem) -> Self::StoreFuture {
