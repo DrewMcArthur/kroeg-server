@@ -9,7 +9,7 @@ use context::HyperContextLoader;
 use hyper;
 use hyper::{Body, StatusCode, Uri};
 use jsonld::{error::ExpansionError, expand, JsonLdOptions};
-use kroeg_tap::{untangle, CollectionPointer, EntityStore, StoreItem};
+use kroeg_tap::{untangle, CollectionPointer, EntityStore, QuadQuery, StoreItem};
 use request::HyperLDRequest;
 use serde_json::{from_slice, Error as SerdeError};
 use std::collections::HashMap;
@@ -132,6 +132,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
     type ReadCollectionFuture =
         Box<Future<Item = CollectionPointer, Error = Self::Error> + 'static + Send>;
     type WriteCollectionFuture = Box<Future<Item = (), Error = Self::Error> + 'static + Send>;
+    type QueryFuture = Box<Future<Item = Vec<Vec<String>>, Error = Self::Error> + 'static + Send>;
 
     fn get(&self, path: String, local: bool) -> Self::GetFuture {
         let future = self
@@ -189,6 +190,16 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                 .lock()
                 .unwrap()
                 .put(path, item)
+                .map_err(RetrievingEntityStoreError::StoreError),
+        )
+    }
+
+    fn query(&self, query: Vec<QuadQuery>) -> Self::QueryFuture {
+        Box::new(
+            self.0
+                .lock()
+                .unwrap()
+                .query(query)
                 .map_err(RetrievingEntityStoreError::StoreError),
         )
     }

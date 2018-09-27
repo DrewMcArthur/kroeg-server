@@ -4,7 +4,7 @@ use super::{router::Route, KroegServiceBuilder, ServerError};
 use futures::future::{self, Either};
 use hyper::{Body, Request, Response, Uri};
 use jsonld::nodemap::{Pointer, Value};
-use kroeg_tap::{Context, EntityStore, QueueStore, StoreItem};
+use kroeg_tap::{Context, EntityStore, QuadQuery, QueryId, QueryObject, QueueStore, StoreItem};
 use serde_json::Value as JValue;
 
 /// Extracts a query in the shape of e.g. resource=acct:a@b&other=aaaa into ("a", "b")
@@ -32,7 +32,7 @@ fn extract_username(user: &StoreItem) -> Option<String> {
 }
 
 fn handle_webfinger<T: EntityStore, R: QueueStore>(
-    _: Context,
+    context: Context,
     store: T,
     queue: R,
     request: Request<Body>,
@@ -41,9 +41,37 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
 
     Box::new(
         match acct {
-            Some((user, host)) => Either::A(store.get(format!("https://{}/~{}", host, user), true)),
-            None => Either::B(future::ok(None)),
-        }.map(move |item| {
+            Some((user, _)) => Either::A(store.query(vec![
+                QuadQuery(
+                    QueryId::Placeholder(0),
+                    QueryId::Value(String::from(as2!(preferredUsername))),
+                    QueryObject::Object {
+                        value: user.to_owned(),
+                        type_id: QueryId::Value(
+                            "http://www.w3.org/2001/XMLSchema#string".to_owned(),
+                        ),
+                    },
+                ),
+                QuadQuery(
+                    QueryId::Placeholder(0),
+                    QueryId::Value(String::from(kroeg!(instance))),
+                    QueryObject::Object {
+                        value: context.instance_id.to_string(),
+                        type_id: QueryId::Value(
+                            "http://www.w3.org/2001/XMLSchema#integer".to_owned(),
+                        ),
+                    },
+                ),
+            ])),
+            None => Either::B(future::ok(vec![])),
+        }.and_then(move |item| {
+            let item = item.into_iter().next().and_then(|f| f.into_iter().next());
+            if let Some(item) = item {
+                Either::A(store.get(item, true).map(|item| (store, item)))
+            } else {
+                Either::B(future::ok((store, None)))
+            }
+        }).map(move |(store, item)| {
             let item = item.and_then(|f| extract_username(&f).map(|val| (f, val)));
             let response = if let Some((user, username)) = item {
                 let uri: Uri = user.id().parse().unwrap();
