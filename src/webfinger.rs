@@ -2,7 +2,7 @@ use futures::prelude::*;
 
 use super::{router::Route, KroegServiceBuilder, ServerError};
 use futures::future::{self, Either};
-use hyper::{Body, Request, Response};
+use hyper::{Body, Request, Response, Uri};
 use jsonld::nodemap::{Pointer, Value};
 use kroeg_tap::{Context, EntityStore, QueueStore, StoreItem};
 use serde_json::Value as JValue;
@@ -46,8 +46,10 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
         }.map(move |item| {
             let item = item.and_then(|f| extract_username(&f).map(|val| (f, val)));
             let response = if let Some((user, username)) = item {
+                let uri: Uri = user.id().parse().unwrap();
+
                 let response = json!({
-                "subject": format!("acct:{}@[todo fix]", username),
+                "subject": format!("acct:{}@{}", username, uri.authority_part().unwrap()),
                 "aliases": [user.id()],
                 "links": [{
                     "rel": "self",
@@ -58,6 +60,7 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
 
                 Response::builder()
                     .status(200)
+                    .header("Content-Type", "application/jrd+json")
                     .body(Body::from(response.to_string()))
                     .unwrap()
             } else {
