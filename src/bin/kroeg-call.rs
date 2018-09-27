@@ -115,16 +115,19 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), T::
 fn make_owned<T: EntityStore + 'static>(
     config: config::Config,
     mut store: T,
-    id: String
+    id: String,
 ) -> Result<(), T::Error> {
     let mut object = await!(store.get(id, true))?.unwrap();
     object.meta().get_mut(kroeg!(instance)).clear();
 
-    object.meta().get_mut(kroeg!(instance)).push(Pointer::Value(Value {
-      value: JValue::Number(config.server.instance_id.into()),
-      type_id: None,
-      language: None,
-    }));
+    object
+        .meta()
+        .get_mut(kroeg!(instance))
+        .push(Pointer::Value(Value {
+            value: JValue::Number(config.server.instance_id.into()),
+            type_id: None,
+            language: None,
+        }));
 
     let _ = await!(store.put(object.id().to_owned(), object))?;
 
