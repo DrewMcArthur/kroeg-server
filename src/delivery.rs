@@ -69,7 +69,7 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
     let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
 
     let mut signed = String::new();
-    let headers = &["(request-target)", "date", "digest"];
+    let headers = &["(request-target)", "digest"];
     for val in headers {
         let value = match *val {
             "(request-target)" => format!(
@@ -107,8 +107,9 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
     req.headers_mut().insert(
         "Signature",
         format!(
-            "keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"(request-target)\",signature=\"{}\"",
+            "keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"{}\",signature=\"{}\"",
             key_object.id(),
+            headers.join(" "),
             signature
         ).parse()
         .unwrap(),
