@@ -112,6 +112,26 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), T::
 }
 
 #[async]
+fn make_owned<T: EntityStore + 'static>(
+    config: config::Config,
+    mut store: T,
+    id: String
+) -> Result<(), T::Error> {
+    let mut object = await!(store.get(id, true))?.unwrap();
+    object.meta().get_mut(kroeg!(instance)).clear();
+
+    object.meta().get_mut(kroeg!(instance)).push(Pointer::Value(Value {
+      value: JValue::Number(config.server.instance_id.into()),
+      type_id: None,
+      language: None,
+    }));
+
+    let _ = await!(store.put(object.id().to_owned(), object))?;
+
+    Ok(())
+}
+
+#[async]
 fn create_user<T: EntityStore + 'static>(
     mut store: T,
     id: String,
@@ -164,7 +184,7 @@ fn main() {
     let store = QuadClient::new(db);
 
     if args.len() < 2 {
-        eprintln!("Usage: {} [create / auth]", args[0]);
+        eprintln!("Usage: {} [create / auth / own]", args[0]);
         return;
     }
 
@@ -185,6 +205,11 @@ fn main() {
         "auth" => {
             let id = args.remove(2);
             Box::new(create_auth(store, id).map_err(|e| eprintln!("Error: {}", e)))
+        }
+
+        "own" => {
+            let id = args.remove(2);
+            Box::new(make_owned(config, store, id).map_err(|e| eprintln!("Error: {}", e)))
         }
 
         val => {
