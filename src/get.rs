@@ -102,7 +102,7 @@ pub fn get<T: EntityStore, R: QueueStore>(
             let mut response = Response::builder();
             response.header("Vary", "Accept").header(
                 "Content-Type",
-                "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+                "application/activity+json",
             );
 
             match value {
