@@ -7,11 +7,8 @@ use futures::{future, Future};
 use hyper::{Body, Response, Server};
 use kroeg::{config, context, get, post, router::Route, KroegServiceBuilder};
 
-fn main() {
-    dotenv::dotenv().ok();
-    let config = config::read_config();
-
-    let addr = &config.listen.parse().expect("Invalid listen address!");
+fn listen_future(address: &str, config: &config::Config) -> impl Future<Item = (), Error = ()> + Send + 'static {
+    let addr = address.parse().expect("Invalid listen address!");
 
     let routes = vec![
         Route::get_prefix("/", kroeg::compact_response(get::get)),
@@ -39,14 +36,27 @@ fn main() {
 
     kroeg::webfinger::register(&mut builder);
 
-    let server = Server::bind(&addr).serve(builder);
+    println!(" [+] listening at {}", addr);
+
+    Server::bind(&addr)
+        .serve(builder)
+        .map_err(|_| ())
+}
+
+fn main() {
+    dotenv::dotenv().ok();
+    let config = config::read_config();
 
     println!("Kroeg v{} starting...", env!("CARGO_PKG_VERSION"));
-    println!("listening at {}", addr);
 
     hyper::rt::run(hyper::rt::lazy(move || {
-        hyper::rt::spawn(server.map_err(|_| {}));
-        hyper::rt::spawn(kroeg::launch_delivery(config.clone()));
+        if let Some(ref address) = config.listen {
+            hyper::rt::spawn(listen_future(address, &config));
+        }
+
+        for _ in 0..config.deliver.unwrap_or(0) {
+            hyper::rt::spawn(kroeg::launch_delivery(config.clone()));
+        }
 
         Ok(())
     }))

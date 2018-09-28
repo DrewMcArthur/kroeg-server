@@ -1,7 +1,26 @@
-listen = "127.0.0.1:3000"
+# Any server needs to have a database defined:
 database = "postgres://localhost/kroegrs"
 
+# If you want this process to listen for HTTP requests, set listen to the location you want it to listen at.
+listen = "127.0.0.1:3000"
+
+# Do you want this process to deliver statuses and handle other background tasks? Set this value to the amount
+# of simultaneous tasks to handle.
+deliver = 1
+
+# This part describes information about the server itself.
 [server]
+
+# The base URI is the basae that this process will host data. When listening, it will assume any requests start
+#  with the base URI. The base URI *must not* have a trailing slash, lest you want to invoke horrible debugging
+#  on yourself.
 base_uri = "http://127.0.0.1:3000"
+
+# If you want to host more than one Kroeg instance per database, ensure these values do not conflict.
+# The instance ID is used internally to keep track of who owns which object. There is no logical difference between
+#  running two Kroeg instances on a separate database, and hosting them on one database with separate instance ID,
+#  except that they share knowledge about remote objects.
 instance_id = 1
+
+# Not used currently, but will be used to assign special meanings to authentication tokens.
 admins = ["http://127.0.0.1:3000/admin"]

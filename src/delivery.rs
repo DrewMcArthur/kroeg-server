@@ -205,6 +205,8 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 header
             };
 
+            println!(" [+] {} {}", uri, headers.status);
+
             Ok((context, client, store, item))
         }
 

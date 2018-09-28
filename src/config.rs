@@ -4,9 +4,11 @@ use toml;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
-    pub listen: String,
     pub server: ServerConfig,
     pub database: String,
+
+    pub listen: Option<String>,
+    pub deliver: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
