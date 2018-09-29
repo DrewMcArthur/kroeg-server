@@ -1,10 +1,11 @@
 {
   "@context": ["https://w3id.org/security/v1", {
     "kroeg": "https://puckipedia.com/kroeg/ns#",
-
     "NotFound": "kroeg:NotFound",
+
     "as:Public": null,
     "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+    "Hashtag": "as:Hashtag",
 
     "schema": "http://schema.org#",
     "PropertyValue": "schema:PropertyValue",
