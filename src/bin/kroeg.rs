@@ -7,7 +7,10 @@ use futures::{future, Future};
 use hyper::{Body, Response, Server};
 use kroeg::{config, context, get, post, router::Route, KroegServiceBuilder};
 
-fn listen_future(address: &str, config: &config::Config) -> impl Future<Item = (), Error = ()> + Send + 'static {
+fn listen_future(
+    address: &str,
+    config: &config::Config,
+) -> impl Future<Item = (), Error = ()> + Send + 'static {
     let addr = address.parse().expect("Invalid listen address!");
 
     let routes = vec![
@@ -38,9 +41,7 @@ fn listen_future(address: &str, config: &config::Config) -> impl Future<Item = (
 
     println!(" [+] listening at {}", addr);
 
-    Server::bind(&addr)
-        .serve(builder)
-        .map_err(|_| ())
+    Server::bind(&addr).serve(builder).map_err(|_| ())
 }
 
 fn main() {

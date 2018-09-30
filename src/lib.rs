@@ -266,11 +266,10 @@ pub fn compact_response<
                 .and_then(move |(store, queue, response)| {
                     let (parts, body) = response.into_parts();
 
-                    context::compact(&context, body)
-                        .then(|val| match val {
-                            Ok(val) => Ok((store, queue, parts, val)),
-                            Err(e) => Err((ServerError::CompactionError(e), store)),
-                        })
+                    context::compact(&context, body).then(|val| match val {
+                        Ok(val) => Ok((store, queue, parts, val)),
+                        Err(e) => Err((ServerError::CompactionError(e), store)),
+                    })
                 }).map(|(store, queue, parts, body)| {
                     (
                         store,

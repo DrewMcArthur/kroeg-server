@@ -111,83 +111,100 @@ fn retrieve_and_store<T: EntityStore>(
                 Either::B(future::ok(HashMap::new()))
             }
         }).then(move |res| match res {
-            Ok(res) => Either::A(StoreAllFuture::new(store, res.into_iter().map(|(_, a)| a).collect()).map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))),
+            Ok(res) => Either::A(
+                StoreAllFuture::new(store, res.into_iter().map(|(_, a)| a).collect())
+                    .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store)),
+            ),
             Err(e) => Either::B(future::err((e, store))),
         })
 }
 
-fn make_retrieving<T,Q,E: EntityStore>(base: String) -> impl FnOnce(Result<(T, E), (Q, E)>) -> Result<(T, RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
+fn make_retrieving<T, Q, E: EntityStore>(
+    base: String,
+) -> impl FnOnce(Result<(T, E), (Q, E)>)
+    -> Result<(T, RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
     move |f| match f {
         Ok((item, store)) => Ok((item, RetrievingEntityStore(store, base))),
         Err((item, store)) => Err((item, RetrievingEntityStore(store, base))),
     }
 }
 
-fn make_retrieving_nop<Q,E: EntityStore>(base: String) -> impl FnOnce(Result<(E), (Q, E)>) -> Result<(RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
+fn make_retrieving_nop<Q, E: EntityStore>(
+    base: String,
+) -> impl FnOnce(Result<(E), (Q, E)>) -> Result<(RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)>
+{
     move |f| match f {
         Ok(store) => Ok(RetrievingEntityStore(store, base)),
         Err((item, store)) => Err((item, RetrievingEntityStore(store, base))),
     }
 }
 
-
 impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
     type Error = RetrievingEntityStoreError<T>;
-    type GetFuture = Box<Future<Item = (Option<StoreItem>, Self), Error = (Self::Error, Self)> + 'static + Send>;
-    type StoreFuture = Box<Future<Item = (StoreItem, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type GetFuture =
+        Box<Future<Item = (Option<StoreItem>, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type StoreFuture =
+        Box<Future<Item = (StoreItem, Self), Error = (Self::Error, Self)> + 'static + Send>;
     type ReadCollectionFuture =
         Box<Future<Item = (CollectionPointer, Self), Error = (Self::Error, Self)> + 'static + Send>;
-    type WriteCollectionFuture = Box<Future<Item = Self, Error = (Self::Error, Self)> + 'static + Send>;
-    type QueryFuture = Box<Future<Item = (Vec<Vec<String>>, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type WriteCollectionFuture =
+        Box<Future<Item = Self, Error = (Self::Error, Self)> + 'static + Send>;
+    type QueryFuture =
+        Box<Future<Item = (Vec<Vec<String>>, Self), Error = (Self::Error, Self)> + 'static + Send>;
 
     fn get(self, path: String, local: bool) -> Self::GetFuture {
-        let future = self.0.get(path.to_owned(), local)
+        let future = self
+            .0
+            .get(path.to_owned(), local)
             .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store));
         let base = self.1.to_owned();
-        Box::new(if local {
-            Either::A(future)
-        } else {
-            Either::B(future.and_then(move |(item, store)| {
-                if let Some(item) = item {
-                    Either::A(future::ok((Some(item), store)))
-                } else {
-                    if path.starts_with(&base)
-                        || path.starts_with("_:")
-                        || path.starts_with(as2!(tag))
-                    {
-                        return Either::A(future::ok((None, store)));
-                    }
+        Box::new(
+            if local {
+                Either::A(future)
+            } else {
+                Either::B(future.and_then(move |(item, store)| {
+                    if let Some(item) = item {
+                        Either::A(future::ok((Some(item), store)))
+                    } else {
+                        if path.starts_with(&base)
+                            || path.starts_with("_:")
+                            || path.starts_with(as2!(tag))
+                        {
+                            return Either::A(future::ok((None, store)));
+                        }
 
-                    if path == as2!(Public) {
-                        return Either::A(future::ok((
-                            StoreItem::parse(
-                                as2!(Public),
-                                json!({
+                        if path == as2!(Public) {
+                            return Either::A(future::ok((
+                                StoreItem::parse(
+                                    as2!(Public),
+                                    json!({
                                     "@id": as2!(Public),
                                     "@type": [as2!(Collection)]
                                 }),
-                            ).ok(),
-                            store,
-                        )));
-                    }
+                                ).ok(),
+                                store,
+                            )));
+                        }
 
-                    Either::B(retrieve_and_store(path.to_owned(), store).and_then(
-                        move |store| {
-                            store
-                                .get(path.to_owned(), true)
-                                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                        },
-                    ))
-                }
-            }))
-        }.then(make_retrieving(self.1)))
+                        Either::B(retrieve_and_store(path.to_owned(), store).and_then(
+                            move |store| {
+                                store.get(path.to_owned(), true).map_err(|(e, store)| {
+                                    (RetrievingEntityStoreError::StoreError(e), store)
+                                })
+                            },
+                        ))
+                    }
+                }))
+            }.then(make_retrieving(self.1)),
+        )
     }
 
     fn put(self, path: String, item: StoreItem) -> Self::StoreFuture {
         Box::new(
-            self.0.put(path, item)
+            self.0
+                .put(path, item)
                 .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                .then(make_retrieving(self.1))
+                .then(make_retrieving(self.1)),
         )
     }
 
@@ -196,7 +213,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
             self.0
                 .query(query)
                 .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                .then(make_retrieving(self.1))
+                .then(make_retrieving(self.1)),
         )
     }
 
@@ -210,15 +227,16 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
             self.0
                 .read_collection(path, count, cursor)
                 .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                .then(make_retrieving(self.1))
+                .then(make_retrieving(self.1)),
         )
     }
 
     fn find_collection(self, path: String, item: String) -> Self::ReadCollectionFuture {
         Box::new(
-            self.0.find_collection(path, item)
+            self.0
+                .find_collection(path, item)
                 .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                .then(make_retrieving(self.1))
+                .then(make_retrieving(self.1)),
         )
     }
 
@@ -227,7 +245,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
             self.0
                 .insert_collection(path, item)
                 .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                .then(make_retrieving_nop(self.1))
+                .then(make_retrieving_nop(self.1)),
         )
     }
 
@@ -236,7 +254,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
             self.0
                 .remove_collection(path, item)
                 .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
-                .then(make_retrieving_nop(self.1))
+                .then(make_retrieving_nop(self.1)),
         )
     }
 }

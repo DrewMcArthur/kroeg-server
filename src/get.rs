@@ -100,10 +100,9 @@ pub fn get<T: EntityStore, R: QueueStore>(
         }).and_then(move |(store, value)| ensure_authorized(context, store, value))
         .and_then(move |(context, store, value)| {
             let mut response = Response::builder();
-            response.header("Vary", "Accept").header(
-                "Content-Type",
-                "application/activity+json",
-            );
+            response
+                .header("Vary", "Accept")
+                .header("Content-Type", "application/activity+json");
 
             match value {
                 Some(mut value) => {

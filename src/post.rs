@@ -40,12 +40,15 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
         }
     }
 
-    let (user_follower, mut store) = match await!(store.get(context.user.subject.to_owned(), true))? {
-        (Some(user), store) => if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
+    let (user_follower, mut store) = match await!(store.get(context.user.subject.to_owned(), true))?
+    {
+        (Some(user), store) => {
+            if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
                 (Some(id.to_owned()), store)
             } else {
                 (None, store)
-            },
+            }
+        }
         (None, store) => (None, store),
     };
 
@@ -117,7 +120,8 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     }
 
     for send_to in boxes.into_iter() {
-        queue = await!(queue.add("deliver".to_owned(), format!("{} {}", obj.id(), send_to))).unwrap();
+        queue =
+            await!(queue.add("deliver".to_owned(), format!("{} {}", obj.id(), send_to))).unwrap();
     }
 
     Ok((context, obj.id().to_owned(), store, queue))
@@ -132,12 +136,13 @@ pub fn post<T: EntityStore, Q: QueueStore>(
     let id = format!("{}{}", context.server_base, request.uri().path());
 
     let (_, body) = request.into_parts();
-    let expanded =
-        body.concat2().then(move |f| match f {
+    let expanded = body
+        .concat2()
+        .then(move |f| match f {
             Ok(body) => future::ok((body, store)),
-            Err(e) => future::err((ServerError::HyperError(e), store))
-        }).and_then(
-            |(val, store)| match serde_json::from_slice(val.as_ref()).map(context::apply_supplement) {
+            Err(e) => future::err((ServerError::HyperError(e), store)),
+        }).and_then(|(val, store)| {
+            match serde_json::from_slice(val.as_ref()).map(context::apply_supplement) {
                 Ok(value) => Either::A(
                     expand::<HyperContextLoader>(
                         context::apply_supplement(value),
@@ -147,11 +152,14 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                             expand_context: None,
                             processing_mode: None,
                         },
-                    ).then(move |f| match f { Ok(ok) => future::ok((ok, store)), Err(e) => future::err((ServerError::ExpansionError(e), store)), })
+                    ).then(move |f| match f {
+                        Ok(ok) => future::ok((ok, store)),
+                        Err(e) => future::err((ServerError::ExpansionError(e), store)),
+                    }),
                 ),
                 Err(e) => Either::B(future::err((ServerError::SerdeError(e), store))),
-            },
-        );
+            }
+        });
 
     expanded
         .and_then(|(val, store)| {
