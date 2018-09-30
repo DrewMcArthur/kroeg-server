@@ -113,7 +113,7 @@ fn not_found<T: EntityStore, R: QueueStore>(
     store: T,
     queue: R,
     _: Request<Body>,
-) -> Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send> {
+) -> Box<Future<Item = (T, R, Response<Body>), Error = (ServerError<T>, T)> + Send> {
     let response = Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("unhandled route"))
@@ -208,14 +208,14 @@ impl Service for KroegService {
                         route(context, store, queue, request)
                     }
 
-                    Err(e) => Box::new(future::err(ServerError::StoreError(e))),
+                    Err((e, store)) => Box::new(future::err((ServerError::StoreError(e), store))),
                 })
                 // Handlers return a tuple (EntityStore, QueueStore, Response) but we need to return a Response<Body>.
                 // so, we drop the EntityStore and QueueStore. (note to self: bring transactions back)
                 .then(|result| {
                     match result {
                         Ok((.., response)) => Ok(response),
-                        Err(err) => {
+                        Err((err, _)) => {
                             eprintln!("Error handling request: {}", err);
 
                             // If the Service returns an error, the connection with the client will just drop.
@@ -255,7 +255,7 @@ impl NewService for KroegServiceBuilder {
 pub fn compact_response<
     T: EntityStore,
     R: QueueStore,
-    F: Future<Item = (T, R, Response<Value>), Error = ServerError<T>> + Send + 'static,
+    F: Future<Item = (T, R, Response<Value>), Error = (ServerError<T>, T)> + Send + 'static,
     S: 'static + Send + Sync + Fn(Context, T, R, Request<Body>) -> F,
 >(
     function: S,
@@ -267,8 +267,10 @@ pub fn compact_response<
                     let (parts, body) = response.into_parts();
 
                     context::compact(&context, body)
-                        .map(|val| (store, queue, parts, val))
-                        .map_err(ServerError::CompactionError)
+                        .then(|val| match val {
+                            Ok(val) => Ok((store, queue, parts, val)),
+                            Err(e) => Err((ServerError::CompactionError(e), store)),
+                        })
                 }).map(|(store, queue, parts, body)| {
                     (
                         store,

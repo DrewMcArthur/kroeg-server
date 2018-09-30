@@ -87,65 +87,56 @@ impl HyperLDRequest {
 enum StoreState<T: EntityStore + 'static> {
     GetOriginal(T::GetFuture),
     WriteNew(T::StoreFuture),
-    Idle,
+    Idle(T),
 }
 
 pub struct StoreAllFuture<T: EntityStore + 'static> {
-    store: Option<T>,
     todo: Vec<StoreItem>,
-    state: StoreState<T>,
+    state: Option<StoreState<T>>,
 }
 
 impl<T: EntityStore + 'static> StoreAllFuture<T> {
     pub fn new(store: T, items: Vec<StoreItem>) -> Self {
         StoreAllFuture {
-            store: Some(store),
             todo: items,
-            state: StoreState::Idle,
+            state: Some(StoreState::Idle(store)),
         }
     }
 }
 
 impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
     type Item = T;
-    type Error = T::Error;
+    type Error = (T::Error, T);
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            let new_state = match self.state {
-                StoreState::Idle => {
+            let new_state = match self.state.take().unwrap() {
+                StoreState::Idle(store) => {
                     if self.todo.len() > 0 {
                         StoreState::GetOriginal(
-                            self.store
-                                .as_ref()
-                                .unwrap()
-                                .get(self.todo[0].id().to_owned(), true),
+                            store.get(self.todo[0].id().to_owned(), true),
                         )
                     } else {
-                        if let Some(store) = self.store.take() {
-                            break Ok(Async::Ready(store));
-                        } else {
-                            break Ok(Async::NotReady);
-                        }
+                        break Ok(Async::Ready(store));
                     }
                 }
 
                 StoreState::GetOriginal(ref mut future) => match future.poll() {
-                    Ok(Async::Ready(Some(mut prev_item))) => {
+                    Ok(Async::Ready((Some(mut prev_item), store))) => {
                         let mut item = self.todo.remove(0);
                         if prev_item.meta()[kroeg!(instance)] == item.meta()[kroeg!(instance)] {
                             StoreState::WriteNew(
-                                self.store.as_mut().unwrap().put(item.id().to_owned(), item),
+                                store.put(item.id().to_owned(), item),
                             )
                         } else {
-                            StoreState::Idle
+                            StoreState::Idle(store)
                         }
                     }
 
-                    Ok(Async::Ready(None)) => {
+                    Ok(Async::Ready((None, store))) => {
                         let item = self.todo.remove(0);
                         StoreState::WriteNew(
-                            self.store.as_mut().unwrap().put(item.id().to_owned(), item),
+                            store.put(item.id().to_owned(), item),
                         )
                     }
 
@@ -154,14 +145,14 @@ impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
                 },
 
                 StoreState::WriteNew(ref mut future) => match future.poll() {
-                    Ok(Async::Ready(_)) => StoreState::Idle,
+                    Ok(Async::Ready((_, store))) => StoreState::Idle(store),
 
                     Ok(Async::NotReady) => break Ok(Async::NotReady),
                     Err(e) => break Err(e),
                 },
             };
 
-            self.state = new_state;
+            self.state = Some(new_state);
         }
     }
 }

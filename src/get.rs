@@ -18,7 +18,7 @@ fn build_collection_page<T: EntityStore>(
     store: T,
     item: StoreItem,
     query: String,
-) -> impl Future<Item = (T, Option<StoreItem>), Error = T::Error> + Send {
+) -> impl Future<Item = (T, Option<StoreItem>), Error = (T::Error, T)> + Send {
     let cursor = if query == "first" {
         None
     } else {
@@ -27,7 +27,7 @@ fn build_collection_page<T: EntityStore>(
 
     store
         .read_collection(item.id().to_owned(), None, cursor)
-        .map(move |page| {
+        .map(move |(page, store)| {
             let full_id = format!("{}?{}", item.id(), query);
             let items: Vec<_> = page
                 .items
@@ -68,7 +68,7 @@ fn ensure_authorized<T: EntityStore>(
     context: Context,
     store: T,
     item: Option<StoreItem>,
-) -> impl Future<Item = (Context, T, Option<StoreItem>), Error = T::Error> + Send {
+) -> impl Future<Item = (Context, T, Option<StoreItem>), Error = (T::Error, T)> + Send {
     match item {
         Some(value) => {
             let authorizer = DefaultAuthorizer::new(&context);
@@ -86,13 +86,13 @@ pub fn get<T: EntityStore, R: QueueStore>(
     store: T,
     queue: R,
     request: Request<Body>,
-) -> impl Future<Item = (T, R, Response<Value>), Error = ServerError<T>> + Send {
+) -> impl Future<Item = (T, R, Response<Value>), Error = (ServerError<T>, T)> + Send {
     let id = format!("{}{}", context.server_base, request.uri().path());
     let query = request.uri().query().map(str::to_string);
 
     store
         .get(id, true)
-        .and_then(move |item| match (item, query) {
+        .and_then(move |(item, store)| match (item, query) {
             (Some(item), Some(query)) => {
                 Either::A(build_collection_page(store, item, query.to_string()))
             }
@@ -142,5 +142,5 @@ pub fn get<T: EntityStore, R: QueueStore>(
                     Either::B(future::ok((store, queue, response)))
                 }
             }
-        }).map_err(ServerError::StoreError)
+        }).map_err(|(e, store)| (ServerError::StoreError(e), store))
 }

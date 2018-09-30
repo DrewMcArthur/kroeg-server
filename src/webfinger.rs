@@ -36,7 +36,7 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
     store: T,
     queue: R,
     request: Request<Body>,
-) -> Box<Future<Item = (T, R, Response<Body>), Error = ServerError<T>> + Send + 'static> {
+) -> Box<Future<Item = (T, R, Response<Body>), Error = (ServerError<T>, T)> + Send + 'static> {
     let acct = extract_acct(request.uri().query().unwrap_or(""));
 
     Box::new(
@@ -63,15 +63,15 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
                     },
                 ),
             ])),
-            None => Either::B(future::ok(vec![])),
-        }.and_then(move |item| {
+            None => Either::B(future::ok((vec![], store))),
+        }.and_then(move |(item, store)| {
             let item = item.into_iter().next().and_then(|f| f.into_iter().next());
             if let Some(item) = item {
-                Either::A(store.get(item, true).map(|item| (store, item)))
+                Either::A(store.get(item, true))
             } else {
-                Either::B(future::ok((store, None)))
+                Either::B(future::ok((None, store)))
             }
-        }).map(move |(store, item)| {
+        }).map(move |(item, store)| {
             let item = item.and_then(|f| extract_username(&f).map(|val| (f, val)));
             let response = if let Some((user, username)) = item {
                 let uri: Uri = user.id().parse().unwrap();
@@ -99,7 +99,7 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
             };
 
             (store, queue, response)
-        }).map_err(ServerError::StoreError),
+        }).map_err(|(e, store)| (ServerError::StoreError(e), store)),
     )
 }
 

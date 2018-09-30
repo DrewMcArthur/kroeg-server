@@ -57,8 +57,8 @@ pub fn build_header_magic(parts: &Parts, sig: Vec<String>) -> Vec<u8> {
 #[async]
 pub fn verify_http_signature<R: EntityStore>(
     req: Parts,
-    store: R,
-) -> Result<(Parts, R, Option<User>), R::Error> {
+    mut store: R,
+) -> Result<(Parts, R, Option<User>), (R::Error, R)> {
     if let Some(val) = req
         .headers
         .get("Signature")
@@ -89,7 +89,8 @@ pub fn verify_http_signature<R: EntityStore>(
                         .collect::<Vec<_>>();
                     key_id = format!("https://{}/users/{}#public-key", spl[1], spl[0]);
                 }
-                let key_data = await!(store.get(key_id.to_owned(), false))?;
+                let (key_data, _store) = await!(store.get(key_id.to_owned(), false))?;
+                store = _store;
                 if let Some(key_data) = key_data {
                     let pem_data = key_data.main()[sec!(publicKeyPem)]
                         .iter()
@@ -167,7 +168,7 @@ pub fn user_from_request<R: EntityStore>(
     config: config::Config,
     req: Parts,
     mut store: R,
-) -> Result<(config::Config, Parts, R, User), R::Error> {
+) -> Result<(config::Config, Parts, R, User), (R::Error, R)> {
     if let Some(val) = req
         .headers
         .get("Authorization")

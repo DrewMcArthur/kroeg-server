@@ -149,10 +149,10 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
             let uri = data.remove(1);
             let itemid = data.remove(0);
 
-            let sdata = match await!(store.get(itemid, false)) {
-                Ok(Some(ok)) => ok,
-                Ok(None) => return Ok((context, client, store, item)),
-                Err(err) => return Err((context, client, store, item, err)),
+            let (sdata, store) = match await!(store.get(itemid, false)) {
+                Ok((Some(ok), store)) => (ok, store),
+                Ok((None, store)) => return Ok((context, client, store, item)),
+                Err((err, store)) => return Err((context, client, store, item, err)),
             };
 
             if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
@@ -171,13 +171,13 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
             let (context, data) = await!(compact_with_context(context, data)).unwrap();
 
-            let is_local = match await!(store.get(uri.to_owned(), true)) {
-                Ok(Some(val)) => val.is_owned(&context),
-                Ok(None) => false,
-                Err(err) => return Err((context, client, store, item, err)),
+            let (is_local, store) = match await!(store.get(uri.to_owned(), true)) {
+                Ok((Some(val), store)) => (val.is_owned(&context), store),
+                Ok((None, store)) => (false, store),
+                Err((err, store)) => return Err((context, client, store, item, err)),
             };
 
-            let headers = /*if is_local {
+            let (headers, store) = /*if is_local {
                 /* post::process(context, store, queue, request); */
             } else */{
                 let mut req = Request::new(Body::from(data.to_string()));
@@ -185,14 +185,20 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 *req.uri_mut() = uri.parse().unwrap();
                 req.headers_mut().insert("Content-Type", HeaderValue::from_str("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"").unwrap());
 
-                let owner = if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
-                    await!(store.get(id, false)).unwrap().unwrap()
+                let (owner, store) = if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
+                    match await!(store.get(id, false)) {
+                        Ok((Some(val), store)) => (val, store),
+                        _ => panic!("todo"),
+                    }
                 } else {
                     panic!("todo");
                 };
 
-                let key_object = if let Pointer::Id(id) = owner.main()[sec!(publicKey)][0].to_owned() {
-                    await!(store.get(id, false)).unwrap().unwrap()
+                let (key_object, store) = if let Pointer::Id(id) = owner.main()[sec!(publicKey)][0].to_owned() {
+                    match await!(store.get(id, false)) {
+                        Ok((Some(val), store)) => (val, store),
+                        _ => panic!("todo"),
+                    }
                 } else {
                     panic!("todo")
                 };
@@ -202,7 +208,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 let response = match await!(client.request(req).deadline(Instant::now() + Duration::from_millis(10000))) { Ok(val) => val, Err(err) => { println!("ERR {:?}", err); return Ok((context, client, store, item)); }};
                 let (header, _) = response.into_parts();
 
-                header
+                (header, store)
             };
 
             println!(" [+] {} {}", uri, headers.status);
@@ -221,27 +227,26 @@ pub fn register_delivery<R: QueueStore>(
     queue: R,
     item: String,
     towards: String,
-) -> Result<R, R::Error> {
+) -> Result<R, (R::Error, R)> {
     await!(queue.add(
         "deliver".to_owned(),
         format!("{} {}", escape(&item), escape(&towards))
-    ))?;
-
-    Ok(queue)
+    ))
 }
 
 #[async]
 pub fn loop_deliver<T: EntityStore, R: QueueStore>(
     mut context: Context,
     mut store: T,
-    queue: R,
+    mut queue: R,
 ) -> Result<(), ()> {
     println!("[+] Delivery thread start");
     let connector = HttpsConnector::new(1).unwrap();
     let mut client = Client::builder().build::<_, Body>(connector);
 
     loop {
-        let item = await!(queue.get_item()).unwrap();
+        let (item, _queue) = await!(queue.get_item()).unwrap();
+        queue = _queue;
         match item {
             Some(val) => {
                 match await!(deliver_one::<T, R>(context, client, store, val)) {
@@ -249,13 +254,13 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
                         context = co;
                         client = cl;
                         store = s;
-                        await!(queue.mark_success(item)).unwrap();
+                        queue = await!(queue.mark_success(item)).unwrap();
                     }
                     Err((co, cl, s, item, e)) => {
                         context = co;
                         client = cl;
                         store = s;
-                        await!(queue.mark_failure(item)).unwrap();
+                        queue = await!(queue.mark_failure(item)).unwrap();
 
                         return Err(());
                     }

@@ -29,7 +29,7 @@ struct JWTContents {
 }
 
 #[async]
-pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User>), R::Error> {
+pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User>), (R::Error, R)> {
     let mut spl: Vec<_> = token.split('.').map(str::to_owned).collect();
     if spl.len() != 3 {
         return Ok((store, None));
@@ -64,8 +64,8 @@ pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User
         Err(_) => return Ok((store, None)),
     };
 
-    let key_data = await!(store.get(headerdata.kid.to_owned(), false))?
-        .and_then(|f| f.main()[sec!(publicKeyPem)].iter().next().cloned())
+    let (key_data, store) = await!(store.get(headerdata.kid.to_owned(), false))?;;
+    let key_data = key_data.and_then(|f| f.main()[sec!(publicKeyPem)].iter().next().cloned())
         .and_then(|f| match f {
             Pointer::Value(val) => {
                 if let JValue::String(strval) = &val.value {

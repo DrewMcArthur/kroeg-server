@@ -18,9 +18,11 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     context: Context,
     id: String,
     store: T,
-    queue: Q,
-) -> Result<(Context, String, T, Q), T::Error> {
-    let obj = await!(store.get(id, true))?.unwrap();
+    mut queue: Q,
+) -> Result<(Context, String, T, Q), (T::Error, T)> {
+    let (obj, store) = await!(store.get(id, true))?;
+    let obj = obj.unwrap();
+
     let mut boxes = HashSet::new();
     let mut audience: Vec<(usize, String, bool)> = Vec::new();
     for vals in &[
@@ -38,20 +40,19 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
         }
     }
 
-    let user_follower =
-        if let Some(user) = await!(store.get(context.user.subject.to_owned(), true))? {
-            if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
-                Some(id.to_owned())
+    let (user_follower, mut store) = match await!(store.get(context.user.subject.to_owned(), true))? {
+        (Some(user), store) => if let Some(Pointer::Id(id)) = user.main()[as2!(followers)].iter().next() {
+                (Some(id.to_owned()), store)
             } else {
-                None
-            }
-        } else {
-            None
-        };
+                (None, store)
+            },
+        (None, store) => (None, store),
+    };
 
     while audience.len() > 0 {
         let (depth, item, is_shared) = audience.remove(0);
-        let item = await!(store.get(item, false))?;
+        let (item, _store) = await!(store.get(item, false))?;
+        store = _store;
         if let Some(item) = item {
             if !item.is_owned(&context) {
                 let mut has_shared = false;
@@ -61,7 +62,9 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
                             let elem = if endpoint.starts_with("_:") {
                                 item.sub(&endpoint).unwrap().clone()
                             } else {
-                                await!(store.get(endpoint, true))?.unwrap().main().clone()
+                                let (item, _store) = await!(store.get(endpoint, true))?;
+                                store = _store;
+                                item.unwrap().main().clone()
                             };
                             for inbox in elem[as2!(sharedInbox)].clone() {
                                 if let Pointer::Id(inbox) = inbox {
@@ -88,8 +91,10 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
                     .types
                     .contains(&String::from(as2!(OrderedCollection)))
                 {
-                    let data =
+                    let (data, _store) =
                         await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
+                    store = _store;
+
                     for fitem in data.items {
                         audience.push((
                             0,
@@ -112,7 +117,7 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     }
 
     for send_to in boxes.into_iter() {
-        await!(queue.add("deliver".to_owned(), format!("{} {}", obj.id(), send_to))).unwrap();
+        queue = await!(queue.add("deliver".to_owned(), format!("{} {}", obj.id(), send_to))).unwrap();
     }
 
     Ok((context, obj.id().to_owned(), store, queue))
@@ -123,13 +128,16 @@ pub fn post<T: EntityStore, Q: QueueStore>(
     store: T,
     queue: Q,
     request: Request<Body>,
-) -> impl Future<Item = (T, Q, Response<serde_json::Value>), Error = ServerError<T>> {
+) -> impl Future<Item = (T, Q, Response<serde_json::Value>), Error = (ServerError<T>, T)> {
     let id = format!("{}{}", context.server_base, request.uri().path());
 
     let (_, body) = request.into_parts();
     let expanded =
-        body.concat2().map_err(ServerError::HyperError).and_then(
-            |val| match serde_json::from_slice(val.as_ref()).map(context::apply_supplement) {
+        body.concat2().then(move |f| match f {
+            Ok(body) => future::ok((body, store)),
+            Err(e) => future::err((ServerError::HyperError(e), store))
+        }).and_then(
+            |(val, store)| match serde_json::from_slice(val.as_ref()).map(context::apply_supplement) {
                 Ok(value) => Either::A(
                     expand::<HyperContextLoader>(
                         context::apply_supplement(value),
@@ -139,18 +147,18 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                             expand_context: None,
                             processing_mode: None,
                         },
-                    ).map_err(ServerError::ExpansionError),
+                    ).then(move |f| match f { Ok(ok) => future::ok((ok, store)), Err(e) => future::err((ServerError::ExpansionError(e), store)), })
                 ),
-                Err(e) => Either::B(future::err(ServerError::SerdeError(e))),
+                Err(e) => Either::B(future::err((ServerError::SerdeError(e), store))),
             },
         );
 
     expanded
-        .and_then(move |val| {
+        .and_then(|(val, store)| {
             store
                 .get(id, true)
-                .map(|item| (store, val, item))
-                .map_err(ServerError::StoreError)
+                .map(|(item, store)| (store, val, item))
+                .map_err(|(e, store)| (ServerError::StoreError(e), store))
         }).and_then(move |(store, val, item)| {
             if let Some(mut item) = item {
                 let user_inoutbox = item.id().to_owned();
@@ -206,7 +214,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                         assign_ids(context, store, Some(user), untangled)
                             .map(move |(context, store, roots, untangled)| {
                                 (is_inbox, context, store, roots, untangled, user_inoutbox)
-                            }).map_err(ServerError::StoreError),
+                            }).map_err(|(e, store)| (ServerError::StoreError(e), store)),
                     )
                 }
             } else {
@@ -223,14 +231,13 @@ pub fn post<T: EntityStore, Q: QueueStore>(
             |(is_inbox, context, store, roots, untangled, user_inoutbox)| {
                 StoreAllFuture::new(store, untangled.into_iter().map(|(_, v)| v).collect())
                     .map(move |store| (is_inbox, context, store, roots, user_inoutbox))
-                    .map_err(ServerError::StoreError)
+                    .map_err(|(e, store)| (ServerError::StoreError(e), store))
             },
         ).and_then(move |(is_inbox, context, store, roots, user_inoutbox)| {
             let handlers: Vec<Box<MessageHandler<T>>> = if is_inbox {
                 vec![
                     Box::new(handlers::VerifyRequiredEventsHandler(false)),
                     Box::new(handlers::ServerCreateHandler),
-                    Box::new(handlers::ServerFollowHandler),
                 ]
             } else {
                 vec![
@@ -256,7 +263,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     handler
                         .handle(context, store, user_inoutbox.to_owned(), id)
                         .map(|data| (data, user_inoutbox))
-                        .map_err(|e| ServerError::HandlerError(e))
+                        .map_err(|(e, store)| (ServerError::HandlerError(e), store))
                 },
             );
 
@@ -266,7 +273,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                 Either::A(Either::B(
                     end.and_then(|((context, store, id), user_inoutbox)|
                         prepare_delivery(context, id, store, queue)
-                        .map_err(ServerError::StoreError)
+                        .map_err(|(e, store)| (ServerError::StoreError(e), store))
                         .map(move |(context, id, store, queue)| (context, store, queue, Some(id), user_inoutbox))
                     )
                 ))
@@ -275,13 +282,13 @@ pub fn post<T: EntityStore, Q: QueueStore>(
             if let Some(id) = id {
                 Either::A(
                     store.insert_collection(user_inoutbox, id.to_owned())
-                        .map(move |_| (store, queue, Response::builder()
+                        .map(move |store| (store, queue, Response::builder()
                             .status(201)
                             .header("Location", &id as &str)
                             .header("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"")
                             .body(json!({ "@id": id }))
                             .unwrap()))
-                        .map_err(ServerError::StoreError)
+                        .map_err(|(e, store)| (ServerError::StoreError(e), store))
                 )
             } else {
                 Either::B(future::ok((store, queue,

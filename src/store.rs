@@ -10,7 +10,7 @@ use hyper;
 use hyper::{Body, StatusCode, Uri};
 use jsonld::{error::ExpansionError, expand, JsonLdOptions};
 use kroeg_tap::{untangle, CollectionPointer, EntityStore, QuadQuery, StoreItem};
-use request::HyperLDRequest;
+use request::{HyperLDRequest, StoreAllFuture};
 use serde_json::{from_slice, Error as SerdeError};
 use std::collections::HashMap;
 use std::error;
@@ -18,7 +18,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
-pub struct RetrievingEntityStore<T: EntityStore>(Arc<Mutex<T>>, String);
+pub struct RetrievingEntityStore<T: EntityStore>(T, String);
 
 #[derive(Debug)]
 pub enum RetrievingEntityStoreError<T: EntityStore> {
@@ -49,24 +49,12 @@ impl<T: EntityStore> fmt::Display for RetrievingEntityStoreError<T> {
 
 impl<T: EntityStore> RetrievingEntityStore<T> {
     pub fn new(store: T, base: String) -> Self {
-        RetrievingEntityStore(Arc::new(Mutex::new(store)), base)
+        RetrievingEntityStore(store, base)
     }
 
     pub fn unwrap(self) -> T {
-        Arc::try_unwrap(self.0).unwrap().into_inner().unwrap()
+        self.0
     }
-}
-
-#[async]
-fn store_all<T: EntityStore>(
-    store: Arc<Mutex<T>>,
-    items: HashMap<String, StoreItem>,
-) -> Result<Arc<Mutex<T>>, T::Error> {
-    for (key, value) in items {
-        await!(store.lock().unwrap().put(key, value))?;
-    }
-
-    Ok(store)
 }
 
 fn expand_and_unflatten<T: EntityStore>(
@@ -108,8 +96,8 @@ fn expand_and_unflatten<T: EntityStore>(
 
 fn retrieve_and_store<T: EntityStore>(
     item: String,
-    store: Arc<Mutex<T>>,
-) -> impl Future<Item = Arc<Mutex<T>>, Error = RetrievingEntityStoreError<T>> {
+    store: T,
+) -> impl Future<Item = T, Error = (RetrievingEntityStoreError<T>, T)> {
     HyperLDRequest::new(&item)
         .map_err(RetrievingEntityStoreError::HyperError)
         .and_then(move |res| {
@@ -122,130 +110,133 @@ fn retrieve_and_store<T: EntityStore>(
             } else {
                 Either::B(future::ok(HashMap::new()))
             }
-        }).and_then(move |res| store_all(store, res).map_err(RetrievingEntityStoreError::StoreError))
+        }).then(move |res| match res {
+            Ok(res) => Either::A(StoreAllFuture::new(store, res.into_iter().map(|(_, a)| a).collect()).map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))),
+            Err(e) => Either::B(future::err((e, store))),
+        })
 }
+
+fn make_retrieving<T,Q,E: EntityStore>(base: String) -> impl FnOnce(Result<(T, E), (Q, E)>) -> Result<(T, RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
+    move |f| match f {
+        Ok((item, store)) => Ok((item, RetrievingEntityStore(store, base))),
+        Err((item, store)) => Err((item, RetrievingEntityStore(store, base))),
+    }
+}
+
+fn make_retrieving_nop<Q,E: EntityStore>(base: String) -> impl FnOnce(Result<(E), (Q, E)>) -> Result<(RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
+    move |f| match f {
+        Ok(store) => Ok(RetrievingEntityStore(store, base)),
+        Err((item, store)) => Err((item, RetrievingEntityStore(store, base))),
+    }
+}
+
 
 impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
     type Error = RetrievingEntityStoreError<T>;
-    type GetFuture = Box<Future<Item = Option<StoreItem>, Error = Self::Error> + 'static + Send>;
-    type StoreFuture = Box<Future<Item = StoreItem, Error = Self::Error> + 'static + Send>;
+    type GetFuture = Box<Future<Item = (Option<StoreItem>, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type StoreFuture = Box<Future<Item = (StoreItem, Self), Error = (Self::Error, Self)> + 'static + Send>;
     type ReadCollectionFuture =
-        Box<Future<Item = CollectionPointer, Error = Self::Error> + 'static + Send>;
-    type WriteCollectionFuture = Box<Future<Item = (), Error = Self::Error> + 'static + Send>;
-    type QueryFuture = Box<Future<Item = Vec<Vec<String>>, Error = Self::Error> + 'static + Send>;
+        Box<Future<Item = (CollectionPointer, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type WriteCollectionFuture = Box<Future<Item = Self, Error = (Self::Error, Self)> + 'static + Send>;
+    type QueryFuture = Box<Future<Item = (Vec<Vec<String>>, Self), Error = (Self::Error, Self)> + 'static + Send>;
 
-    fn get(&self, path: String, local: bool) -> Self::GetFuture {
-        let future = self
-            .0
-            .lock()
-            .unwrap()
-            .get(path.to_owned(), local)
-            .map_err(RetrievingEntityStoreError::StoreError);
-        let store_copy = self.0.clone();
+    fn get(self, path: String, local: bool) -> Self::GetFuture {
+        let future = self.0.get(path.to_owned(), local)
+            .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store));
         let base = self.1.to_owned();
-
         Box::new(if local {
             Either::A(future)
         } else {
-            Either::B(future.and_then(move |item| {
+            Either::B(future.and_then(move |(item, store)| {
                 if let Some(item) = item {
-                    Either::A(future::ok(Some(item)))
+                    Either::A(future::ok((Some(item), store)))
                 } else {
                     if path.starts_with(&base)
                         || path.starts_with("_:")
                         || path.starts_with(as2!(tag))
                     {
-                        return Either::A(future::ok(None));
+                        return Either::A(future::ok((None, store)));
                     }
 
                     if path == as2!(Public) {
-                        return Either::A(future::ok(
+                        return Either::A(future::ok((
                             StoreItem::parse(
                                 as2!(Public),
                                 json!({
-                                "@id": as2!(Public),
-                                "@type": [as2!(Collection)]
-                            }),
+                                    "@id": as2!(Public),
+                                    "@type": [as2!(Collection)]
+                                }),
                             ).ok(),
-                        ));
+                            store,
+                        )));
                     }
 
-                    Either::B(retrieve_and_store(path.to_owned(), store_copy).and_then(
+                    Either::B(retrieve_and_store(path.to_owned(), store).and_then(
                         move |store| {
                             store
-                                .lock()
-                                .unwrap()
                                 .get(path.to_owned(), true)
-                                .map_err(RetrievingEntityStoreError::StoreError)
+                                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
                         },
                     ))
                 }
             }))
-        })
+        }.then(make_retrieving(self.1)))
     }
 
-    fn put(&mut self, path: String, item: StoreItem) -> Self::StoreFuture {
+    fn put(self, path: String, item: StoreItem) -> Self::StoreFuture {
         Box::new(
-            self.0
-                .lock()
-                .unwrap()
-                .put(path, item)
-                .map_err(RetrievingEntityStoreError::StoreError),
+            self.0.put(path, item)
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving(self.1))
         )
     }
 
-    fn query(&self, query: Vec<QuadQuery>) -> Self::QueryFuture {
+    fn query(self, query: Vec<QuadQuery>) -> Self::QueryFuture {
         Box::new(
             self.0
-                .lock()
-                .unwrap()
                 .query(query)
-                .map_err(RetrievingEntityStoreError::StoreError),
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving(self.1))
         )
     }
 
     fn read_collection(
-        &self,
+        self,
         path: String,
         count: Option<u32>,
         cursor: Option<String>,
     ) -> Self::ReadCollectionFuture {
         Box::new(
             self.0
-                .lock()
-                .unwrap()
                 .read_collection(path, count, cursor)
-                .map_err(RetrievingEntityStoreError::StoreError),
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving(self.1))
         )
     }
 
-    fn find_collection(&self, path: String, item: String) -> Self::ReadCollectionFuture {
+    fn find_collection(self, path: String, item: String) -> Self::ReadCollectionFuture {
         Box::new(
-            self.0
-                .lock()
-                .unwrap()
-                .find_collection(path, item)
-                .map_err(RetrievingEntityStoreError::StoreError),
+            self.0.find_collection(path, item)
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving(self.1))
         )
     }
 
-    fn insert_collection(&mut self, path: String, item: String) -> Self::WriteCollectionFuture {
+    fn insert_collection(self, path: String, item: String) -> Self::WriteCollectionFuture {
         Box::new(
             self.0
-                .lock()
-                .unwrap()
                 .insert_collection(path, item)
-                .map_err(RetrievingEntityStoreError::StoreError),
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving_nop(self.1))
         )
     }
 
-    fn remove_collection(&mut self, path: String, item: String) -> Self::WriteCollectionFuture {
+    fn remove_collection(self, path: String, item: String) -> Self::WriteCollectionFuture {
         Box::new(
             self.0
-                .lock()
-                .unwrap()
                 .remove_collection(path, item)
-                .map_err(RetrievingEntityStoreError::StoreError),
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving_nop(self.1))
         )
     }
 }
