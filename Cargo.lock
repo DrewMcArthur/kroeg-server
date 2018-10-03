@@ -410,6 +410,7 @@ dependencies = [
  "hyper-tls 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "jsonld 0.1.0",
  "kroeg-cellar 0.1.0",
+ "kroeg-mastodon 0.1.0",
  "kroeg-tap 0.1.0",
  "kroeg-tap-activitypub 0.1.0",
  "lazy_static 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -434,6 +435,10 @@ dependencies = [
  "serde 1.0.71 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde_json 1.0.24 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "kroeg-mastodon"
+version = "0.1.0"
 
 [[package]]
 name = "kroeg-tap"

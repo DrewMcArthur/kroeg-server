@@ -1,7 +1,11 @@
 [package]
-name = "kroeg"
+name = "kroeg-server"
 version = "0.1.0"
 authors = ["Puck Meerburg <puck@puckipedia.com>"]
+
+[[bin]]
+name = "kroeg-call"
+path = "src/bin/kroeg-call.rs"
 
 [dependencies]
 serde = "1.0"
