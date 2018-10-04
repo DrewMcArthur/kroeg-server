@@ -397,33 +397,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kroeg"
-version = "0.1.0"
-dependencies = [
- "base64 0.9.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "chashmap 2.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "diesel 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "dotenv 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures-await 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "http 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
- "hyper 0.12.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "hyper-tls 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "jsonld 0.1.0",
- "kroeg-cellar 0.1.0",
- "kroeg-mastodon 0.1.0",
- "kroeg-tap 0.1.0",
- "kroeg-tap-activitypub 0.1.0",
- "lazy_static 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "openssl 0.10.11 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde 1.0.71 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_derive 1.0.71 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde_json 1.0.24 (registry+https://github.com/rust-lang/crates.io-index)",
- "sha2 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "tokio 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
- "toml 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
 name = "kroeg-cellar"
 version = "0.1.0"
 dependencies = [
@@ -437,8 +410,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "kroeg-mastodon"
+name = "kroeg-server"
 version = "0.1.0"
+dependencies = [
+ "base64 0.9.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "chashmap 2.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "diesel 1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dotenv 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "futures-await 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "http 0.1.9 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hyper 0.12.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "hyper-tls 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "jsonld 0.1.0",
+ "kroeg-cellar 0.1.0",
+ "kroeg-tap 0.1.0",
+ "kroeg-tap-activitypub 0.1.0",
+ "lazy_static 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "openssl 0.10.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde 1.0.71 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_derive 1.0.71 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde_json 1.0.24 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sha2 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio 0.1.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "toml 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
+]
 
 [[package]]
 name = "kroeg-tap"

@@ -52,6 +52,16 @@ impl<T: EntityStore, R: QueueStore> Route<T, R> {
             handler: Arc::new(handler),
         }
     }
+    /// Create a handler for a POST request to a specific path.
+    pub fn post(path: &str, handler: RequestHandler<T, R>) -> Self {
+        Route {
+            path: path.to_owned(),
+            method: Method::POST,
+            is_prefix: false,
+            content_type: Vec::new(),
+            handler: Arc::new(handler),
+        }
+    }
     /// Create a handler for a GET request to a prefix.
     pub fn get_prefix(path: &str, handler: RequestHandler<T, R>) -> Self {
         Route {
