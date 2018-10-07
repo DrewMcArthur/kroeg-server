@@ -46,8 +46,10 @@ fn read_config() -> config::Config {
 }
 
 #[async]
-fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), T::Error> {
-    let person = await!(store.get(id, false))?.unwrap();
+fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), (T::Error, T)> {
+    let (person, store) = await!(store.get(id, false))?;
+    let person = person.unwrap();
+
     let mut key = None;
     for val in &person.main()[sec!(publicKey)] {
         if let Pointer::Id(id) = val {
@@ -62,7 +64,8 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), T::
     }
 
     let keyid = key.unwrap();
-    let mut key = await!(store.get(keyid.to_owned(), false))?.unwrap();
+    let (key, store) = await!(store.get(keyid.to_owned(), false))?;
+    let mut key = key.unwrap();
     let private = &key.meta()[sec!(privateKeyPem)];
     let key = if private.len() != 1 {
         eprintln!("Cannot create authentication for user: no private key");
@@ -88,7 +91,8 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), T::
             "typ": "JWT",
             "alg": "RS256",
             "kid": keyid
-        }).to_string()
+        })
+            .to_string()
             .as_bytes(),
             base64::URL_SAFE_NO_PAD
         ),
@@ -97,7 +101,8 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), T::
             "iss": "kroeg-call",
             "sub": person.id(),
             "exp": 0xFFFFFFFFu32
-        }).to_string()
+        })
+            .to_string()
             .as_bytes(),
             base64::URL_SAFE_NO_PAD
         ),
@@ -116,8 +121,9 @@ fn make_owned<T: EntityStore + 'static>(
     config: config::Config,
     mut store: T,
     id: String,
-) -> Result<(), T::Error> {
-    let mut object = await!(store.get(id, true))?.unwrap();
+) -> Result<(), (T::Error, T)> {
+    let (object, store) = await!(store.get(id, true))?;
+    let mut object = object.unwrap();
     object.meta().get_mut(kroeg!(instance)).clear();
 
     object
@@ -140,7 +146,7 @@ fn create_user<T: EntityStore + 'static>(
     id: String,
     name: String,
     username: String,
-) -> Result<(), Box<Error + Send + Sync + 'static>> {
+) -> Result<(), (Box<Error + Send + Sync + 'static>, T)> {
     let user = json!(
         {
             "@id": id.to_owned(),
@@ -153,7 +159,8 @@ fn create_user<T: EntityStore + 'static>(
     let mut untangled = untangle(user).unwrap();
     for (key, value) in untangled {
         println!("Storing {:?} {:?}", key, value);
-        await!(store.put(key, value)).map_err(Box::new)?;
+        let (_, _store) = await!(store.put(key, value)).map_err(|(e, store)| (e.into(), store))?;
+        store = _store;
     }
 
     let config = read_config();
@@ -202,17 +209,19 @@ fn main() {
             let username = args.remove(3);
             let id = args.remove(2);
 
-            Box::new(create_user(store, id, name, username).map_err(|e| eprintln!("Error: {}", e)))
+            Box::new(
+                create_user(store, id, name, username).map_err(|(e, _)| eprintln!("Error: {}", e)),
+            )
         }
 
         "auth" => {
             let id = args.remove(2);
-            Box::new(create_auth(store, id).map_err(|e| eprintln!("Error: {}", e)))
+            Box::new(create_auth(store, id).map_err(|(e, _)| eprintln!("Error: {}", e)))
         }
 
         "own" => {
             let id = args.remove(2);
-            Box::new(make_owned(config, store, id).map_err(|e| eprintln!("Error: {}", e)))
+            Box::new(make_owned(config, store, id).map_err(|(e, _)| eprintln!("Error: {}", e)))
         }
 
         val => {
