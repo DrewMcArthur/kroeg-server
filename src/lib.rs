@@ -1,4 +1,4 @@
-#![feature(generators, use_extern_macros)]
+#![feature(generators)]
 
 #[macro_use]
 extern crate serde_derive;
@@ -270,7 +270,8 @@ pub fn compact_response<
                         Ok(val) => Ok((store, queue, parts, val)),
                         Err(e) => Err((ServerError::CompactionError(e), store)),
                     })
-                }).map(|(store, queue, parts, body)| {
+                })
+                .map(|(store, queue, parts, body)| {
                     (
                         store,
                         queue,

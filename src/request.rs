@@ -7,15 +7,15 @@ use hyper::{
 use hyper_tls::HttpsConnector;
 
 use kroeg_tap::{EntityStore, StoreItem};
-use std::time::{Duration, Instant};
-use tokio::timer::Deadline;
+use std::time::Duration;
+use tokio::timer::Timeout;
 
 /// A Future that will follow an amount of requests
 /// before retunring the response.
 pub struct HyperLDRequest {
     client: Client<HttpsConnector<HttpConnector>>,
     requests_left: u32,
-    current_future: Deadline<ResponseFuture>,
+    current_future: Timeout<ResponseFuture>,
 }
 
 impl Future for HyperLDRequest {
@@ -41,10 +41,8 @@ impl Future for HyperLDRequest {
                          .unwrap();
 
                         self.requests_left -= 1;
-                        self.current_future = Deadline::new(
-                            self.client.request(request),
-                            Instant::now() + Duration::from_millis(7000),
-                        );
+                        self.current_future =
+                            Timeout::new(self.client.request(request), Duration::from_millis(7000));
                         continue;
                     }
 
@@ -52,11 +50,13 @@ impl Future for HyperLDRequest {
                 }
 
                 Ok(Async::NotReady) => Ok(Async::NotReady),
-                Err(e) => if e.is_elapsed() {
-                    Ok(Async::Ready(None))
-                } else {
-                    Err(e.into_inner().unwrap())
-                },
+                Err(e) => {
+                    if e.is_elapsed() {
+                        Ok(Async::Ready(None))
+                    } else {
+                        Err(e.into_inner().unwrap())
+                    }
+                }
             };
         }
     }
@@ -71,10 +71,7 @@ impl HyperLDRequest {
 
         let connector = HttpsConnector::new(1).unwrap();
         let client = Client::builder().build(connector);
-        let future = Deadline::new(
-            client.request(request),
-            Instant::now() + Duration::from_millis(7000),
-        );
+        let future = Timeout::new(client.request(request), Duration::from_millis(7000));
 
         HyperLDRequest {
             client: client,

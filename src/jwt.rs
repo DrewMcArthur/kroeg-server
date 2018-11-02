@@ -77,7 +77,8 @@ pub fn verify<R: EntityStore>(store: R, token: String) -> Result<(R, Option<User
             }
 
             _ => None,
-        }).and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok())
+        })
+        .and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok())
         .map(|f| PKey::from_rsa(f).unwrap())
         .unwrap();
     let mut verifier = Verifier::new(MessageDigest::sha256(), &key_data).unwrap();

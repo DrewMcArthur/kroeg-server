@@ -97,7 +97,8 @@ pub fn get<T: EntityStore, R: QueueStore>(
                 Either::A(build_collection_page(store, item, query.to_string()))
             }
             (item, _) => Either::B(future::ok((store, item))),
-        }).and_then(move |(store, value)| ensure_authorized(context, store, value))
+        })
+        .and_then(move |(store, value)| ensure_authorized(context, store, value))
         .and_then(move |(context, store, value)| {
             let mut response = Response::builder();
             response
@@ -106,10 +107,11 @@ pub fn get<T: EntityStore, R: QueueStore>(
 
             match value {
                 Some(mut value) => {
-                    if value.is_owned(&context) && value
-                        .main()
-                        .types
-                        .contains(&String::from(as2!(OrderedCollection)))
+                    if value.is_owned(&context)
+                        && value
+                            .main()
+                            .types
+                            .contains(&String::from(as2!(OrderedCollection)))
                     {
                         let id = format!("{}?first", value.id());
                         value.main_mut()[as2!(first)].push(Pointer::Id(id));
@@ -122,7 +124,8 @@ pub fn get<T: EntityStore, R: QueueStore>(
                             Some(store),
                             DefaultAuthorizer::new(&context),
                             HashSet::new(),
-                        ).map(move |(_, store, _, data)| {
+                        )
+                        .map(move |(_, store, _, data)| {
                             let response = response.status(200).body(data).unwrap();
 
                             (store.unwrap(), queue, response)
@@ -136,10 +139,12 @@ pub fn get<T: EntityStore, R: QueueStore>(
                         .body(json!({
                             "@type": "https://puckipedia.com/kroeg/ns#NotFound", 
                             as2!(content): "Not found"
-                        })).unwrap();
+                        }))
+                        .unwrap();
 
                     Either::B(future::ok((store, queue, response)))
                 }
             }
-        }).map_err(|(e, store)| (ServerError::StoreError(e), store))
+        })
+        .map_err(|(e, store)| (ServerError::StoreError(e), store))
 }

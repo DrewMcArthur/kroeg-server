@@ -1,8 +1,4 @@
-use futures::{
-    future,
-    future::Either,
-    prelude::{await, *},
-};
+use futures::{future, future::Either, prelude::*};
 
 use super::context;
 use context::HyperContextLoader;
@@ -15,7 +11,6 @@ use serde_json::{from_slice, Error as SerdeError};
 use std::collections::HashMap;
 use std::error;
 use std::fmt;
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct RetrievingEntityStore<T: EntityStore>(T, String);
@@ -75,7 +70,8 @@ fn expand_and_unflatten<T: EntityStore>(
                         .into_future(),
                 )
             }
-        }).and_then(|value| {
+        })
+        .and_then(|value| {
             expand::<HyperContextLoader>(
                 context::apply_supplement(value),
                 JsonLdOptions {
@@ -84,8 +80,10 @@ fn expand_and_unflatten<T: EntityStore>(
                     expand_context: None,
                     processing_mode: None,
                 },
-            ).map_err(RetrievingEntityStoreError::ExpansionError)
-        }).map(move |value| {
+            )
+            .map_err(RetrievingEntityStoreError::ExpansionError)
+        })
+        .map(move |value| {
             let mut value = untangle(value).unwrap();
             value.retain(|k, _| {
                 k.parse::<Uri>().ok().map(|f| f.authority_part().cloned()) == authority
@@ -110,7 +108,8 @@ fn retrieve_and_store<T: EntityStore>(
             } else {
                 Either::B(future::ok(HashMap::new()))
             }
-        }).then(move |res| match res {
+        })
+        .then(move |res| match res {
             Ok(res) => Either::A(
                 StoreAllFuture::new(store, res.into_iter().map(|(_, a)| a).collect())
                     .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store)),
@@ -181,7 +180,8 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                                     "@id": as2!(Public),
                                     "@type": [as2!(Collection)]
                                 }),
-                                ).ok(),
+                                )
+                                .ok(),
                                 store,
                             )));
                         }
@@ -195,7 +195,8 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                         ))
                     }
                 }))
-            }.then(make_retrieving(self.1)),
+            }
+            .then(make_retrieving(self.1)),
         )
     }
 

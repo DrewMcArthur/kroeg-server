@@ -105,7 +105,8 @@ pub fn verify_http_signature<R: EntityStore>(
                             }
 
                             _ => None,
-                        }).and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok());
+                        })
+                        .and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok());
 
                     if let Some(key) = pem_data {
                         let key = PKey::from_rsa(key).unwrap();
@@ -113,7 +114,8 @@ pub fn verify_http_signature<R: EntityStore>(
                         let owner = match key_data.main()[sec!(owner)].iter().next() {
                             Some(Pointer::Id(id)) => Some(id.to_owned()),
                             _ => None,
-                        }.unwrap();
+                        }
+                        .unwrap();
 
                         match &*algorithm as &str {
                             "rsa-sha256" => {
@@ -191,5 +193,6 @@ pub fn user_from_request<R: EntityStore>(
             Some(data) => data,
             None => anonymous(),
         },
-    ))).map(move |(req, store, user)| (config, req, store, user))
+    )))
+    .map(move |(req, store, user)| (config, req, store, user))
 }

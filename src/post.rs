@@ -93,6 +93,7 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
                     .main()
                     .types
                     .contains(&String::from(as2!(OrderedCollection)))
+                    && depth < 3
                 {
                     let (data, _store) =
                         await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
@@ -100,7 +101,7 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
 
                     for fitem in data.items {
                         audience.push((
-                            0,
+                            depth + 1,
                             fitem,
                             user_follower
                                 .as_ref()
@@ -141,7 +142,8 @@ pub fn post<T: EntityStore, Q: QueueStore>(
         .then(move |f| match f {
             Ok(body) => future::ok((body, store)),
             Err(e) => future::err((ServerError::HyperError(e), store)),
-        }).and_then(|(val, store)| {
+        })
+        .and_then(|(val, store)| {
             match serde_json::from_slice(val.as_ref()).map(context::apply_supplement) {
                 Ok(value) => Either::A(
                     expand::<HyperContextLoader>(
@@ -152,7 +154,8 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                             expand_context: None,
                             processing_mode: None,
                         },
-                    ).then(move |f| match f {
+                    )
+                    .then(move |f| match f {
                         Ok(ok) => future::ok((ok, store)),
                         Err(e) => future::err((ServerError::ExpansionError(e), store)),
                     }),
@@ -220,9 +223,9 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     let user = context.user.subject.to_owned();
                     Either::A(
                         assign_ids(context, store, Some(user), untangled)
-                            .map(move |(context, store, roots, untangled)| {
+                            .map(move |(context, store, roots, untangled)|
                                 (is_inbox, context, store, roots, untangled, user_inoutbox)
-                            }).map_err(|(e, store)| (ServerError::StoreError(e), store)),
+                            ).map_err(|(e, store)| (ServerError::StoreError(e), store)),
                     )
                 }
             } else {
@@ -286,7 +289,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     )
                 ))
             }
-        }).and_then(|(_, mut store, queue, id, user_inoutbox)| {
+        }).and_then(|(_, store, queue, id, user_inoutbox)| {
             if let Some(id) = id {
                 Either::A(
                     store.insert_collection(user_inoutbox, id.to_owned())

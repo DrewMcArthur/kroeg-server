@@ -3,17 +3,13 @@ use futures::prelude::{await, *};
 use kroeg_tap::{assemble, Context, DefaultAuthorizer, EntityStore, QueueItem, QueueStore};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::error::Error;
 use std::time::{Duration, Instant};
 use tokio::prelude::*;
 use tokio::timer::Delay;
 
 use context;
 use hyper::client::HttpConnector;
-use hyper::{
-    header::{HeaderMap, HeaderValue},
-    Body, Client, Method, Request, Uri,
-};
+use hyper::{header::HeaderValue, Body, Client, Method, Request};
 use hyper_tls::HttpsConnector;
 use jsonld::nodemap::Pointer;
 use jsonld::{compact, error::CompactionError, JsonLdOptions};
@@ -63,7 +59,8 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
                 }
             }
             _ => None,
-        }).and_then(|f| Rsa::private_key_from_pem(f.as_bytes()).ok())
+        })
+        .and_then(|f| Rsa::private_key_from_pem(f.as_bytes()).ok())
         .unwrap();
     let key = PKey::from_rsa(pem_data).unwrap();
     let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
@@ -111,7 +108,8 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
             key_object.id(),
             headers.join(" "),
             signature
-        ).parse()
+        )
+        .parse()
         .unwrap(),
     );
 }
@@ -165,13 +163,14 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 Some(store),
                 DefaultAuthorizer::new(&context),
                 HashSet::new()
-            )).unwrap();
+            ))
+            .unwrap();
 
             let store = nstore.unwrap();
 
             let (context, data) = await!(compact_with_context(context, data)).unwrap();
 
-            let (is_local, store) = match await!(store.get(uri.to_owned(), true)) {
+            let (_, store) = match await!(store.get(uri.to_owned(), true)) {
                 Ok((Some(val), store)) => (val.is_owned(&context), store),
                 Ok((None, store)) => (false, store),
                 Err((err, store)) => return Err((context, client, store, item, err)),
@@ -205,7 +204,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
                 create_signature(&data.to_string(), &key_object, &mut req);
 
-                let response = match await!(client.request(req).deadline(Instant::now() + Duration::from_millis(10000))) { Ok(val) => val, Err(err) => { println!("ERR {:?}", err); return Ok((context, client, store, item)); }};
+                let response = match await!(client.request(req).timeout(Duration::from_millis(10000))) { Ok(val) => val, Err(err) => { println!("ERR {:?}", err); return Ok((context, client, store, item)); }};
                 let (header, _) = response.into_parts();
 
                 (header, store)
@@ -256,9 +255,9 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
                         store = s;
                         queue = await!(queue.mark_success(item)).unwrap();
                     }
-                    Err((co, cl, s, item, e)) => {
+                    Err((co, _cl, s, item, _)) => {
                         context = co;
-                        client = cl;
+                        // client = cl;
                         store = s;
                         queue = await!(queue.mark_failure(item)).unwrap();
 

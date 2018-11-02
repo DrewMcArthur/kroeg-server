@@ -64,14 +64,16 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
                 ),
             ])),
             None => Either::B(future::ok((vec![], store))),
-        }.and_then(move |(item, store)| {
+        }
+        .and_then(move |(item, store)| {
             let item = item.into_iter().next().and_then(|f| f.into_iter().next());
             if let Some(item) = item {
                 Either::A(store.get(item, true))
             } else {
                 Either::B(future::ok((None, store)))
             }
-        }).map(move |(item, store)| {
+        })
+        .map(move |(item, store)| {
             let item = item.and_then(|f| extract_username(&f).map(|val| (f, val)));
             let response = if let Some((user, username)) = item {
                 let uri: Uri = user.id().parse().unwrap();
@@ -99,7 +101,8 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
             };
 
             (store, queue, response)
-        }).map_err(|(e, store)| (ServerError::StoreError(e), store)),
+        })
+        .map_err(|(e, store)| (ServerError::StoreError(e), store)),
     )
 }
 
