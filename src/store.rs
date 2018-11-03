@@ -232,6 +232,15 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
         )
     }
 
+    fn read_collection_inverse(self, item: String) -> Self::ReadCollectionFuture {
+        Box::new(
+            self.0
+                .read_collection_inverse(item)
+                .map_err(|(e, store)| (RetrievingEntityStoreError::StoreError(e), store))
+                .then(make_retrieving(self.1)),
+        )
+    }
+
     fn find_collection(self, path: String, item: String) -> Self::ReadCollectionFuture {
         Box::new(
             self.0

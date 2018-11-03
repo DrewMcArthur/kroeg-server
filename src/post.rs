@@ -6,7 +6,10 @@ use futures::{stream, Future, Stream};
 use hyper::{Body, Request, Response, Uri};
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
-use kroeg_tap::{assign_ids, untangle, Context, EntityStore, MessageHandler, QueueStore};
+use kroeg_tap::{
+    assign_ids, untangle, Context, EntityStore, MessageHandler, QuadQuery, QueryId, QueryObject,
+    QueueStore,
+};
 use kroeg_tap_activitypub::handlers;
 use request::StoreAllFuture;
 use serde_json;
@@ -21,15 +24,15 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     mut queue: Q,
     local: bool,
 ) -> Result<(Context, String, T, Q), (T::Error, T)> {
-    if local {
-        panic!("todo");
-    }
-
     let (obj, store) = await!(store.get(id, true))?;
     let obj = obj.unwrap();
 
     let mut boxes = HashSet::new();
     let mut audience: Vec<(usize, String, bool)> = Vec::new();
+
+    // To process delivery, we use a queue-like structure. We resolve up to a depth of three, as to not allow very deep resolving.
+    // (depth, id, should we try to resolve shared inboxes)
+
     for vals in &[
         as2!(to),
         as2!(bto),
@@ -41,6 +44,8 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
         for item in &obj.main()[vals] {
             if let Pointer::Id(id) = item {
                 audience.push((0, id.to_owned(), false));
+
+                // Why not resolve shared inboxes at the first layer? it's not specced that way. boring, i know.
             }
         }
     }
@@ -61,58 +66,111 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
         let (depth, item, is_shared) = audience.remove(0);
         let (item, _store) = await!(store.get(item, false))?;
         store = _store;
+
         if let Some(item) = item {
+            // If this is a remote object, we will try to resolve shared inbox if available and allowed.
+            // Local objects it makes no sense to do sharedInbox, as we will end up here again.
+            // We will resolve local collections though!
             if !item.is_owned(&context) {
-                let mut has_shared = false;
-                if is_shared {
-                    for endpoint in item.main()[as2!(endpoints)].clone() {
-                        if let Pointer::Id(endpoint) = endpoint {
-                            let elem = if endpoint.starts_with("_:") {
-                                item.sub(&endpoint).unwrap().clone()
-                            } else {
-                                let (item, _store) = await!(store.get(endpoint, true))?;
-                                store = _store;
-                                item.unwrap().main().clone()
-                            };
-                            for inbox in elem[as2!(sharedInbox)].clone() {
-                                if let Pointer::Id(inbox) = inbox {
-                                    boxes.insert(inbox);
-                                    has_shared = true;
+                if local {
+                    let (query, _store) = await!(store.query(vec![QuadQuery(
+                        QueryId::Placeholder(0),
+                        QueryId::Value(String::from(as2!(followers))),
+                        QueryObject::Id(QueryId::Value(item.id().to_owned())),
+                    )]))?;
+
+                    store = _store;
+
+                    for mut item in query {
+                        let user_id = match item.pop() {
+                            Some(user_id) => user_id,
+                            None => continue,
+                        };
+
+                        let (result, _store) = await!(store.read_collection_inverse(user_id))?;
+                        store = _store;
+
+                        let (query, _store) = await!(store.query(vec![
+                            QuadQuery(
+                                QueryId::Placeholder(0),
+                                QueryId::Value(String::from(as2!(following))),
+                                QueryObject::Id(QueryId::Any(result.items)),
+                            ),
+                            QuadQuery(
+                                QueryId::Placeholder(0),
+                                QueryId::Value(String::from(ldp!(inbox))),
+                                QueryObject::Id(QueryId::Placeholder(1))
+                            )
+                        ]))?;
+                        store = _store;
+
+                        for mut item in query {
+                            let _user = item.remove(0);
+                            let inbox = item.remove(0);
+
+                            boxes.insert(inbox);
+                        }
+                    }
+                } else {
+                    let mut has_shared = false;
+                    if is_shared {
+                        for endpoint in item.main()[as2!(endpoints)].clone() {
+                            if let Pointer::Id(endpoint) = endpoint {
+                                // Resolve both blank and non-blank nodes properly.
+                                // Fixing this requires a lot of work.
+                                let elem = if endpoint.starts_with("_:") {
+                                    item.sub(&endpoint).unwrap().clone()
+                                } else {
+                                    let (item, _store) = await!(store.get(endpoint, true))?;
+                                    store = _store;
+                                    item.unwrap().main().clone()
+                                };
+
+                                for inbox in elem[as2!(sharedInbox)].clone() {
+                                    if let Pointer::Id(inbox) = inbox {
+                                        boxes.insert(inbox);
+                                        has_shared = true;
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                if has_shared {
-                    continue;
-                }
+                    if has_shared {
+                        continue;
+                    }
 
-                for inbox in &item.main()[ldp!(inbox)] {
-                    if let Pointer::Id(inbox) = inbox {
-                        boxes.insert(inbox.to_owned());
+                    for inbox in &item.main()[ldp!(inbox)] {
+                        if let Pointer::Id(inbox) = inbox {
+                            boxes.insert(inbox.to_owned());
+                        }
                     }
                 }
             } else {
-                if item
-                    .main()
-                    .types
-                    .contains(&String::from(as2!(OrderedCollection)))
-                    && depth < 3
-                {
-                    let (data, _store) =
-                        await!(store.read_collection(item.id().to_owned(), Some(99999999), None))?;
-                    store = _store;
+                if !local {
+                    if item
+                        .main()
+                        .types
+                        .contains(&String::from(as2!(OrderedCollection)))
+                        && depth < 3
+                    {
+                        let (data, _store) = await!(store.read_collection(
+                            item.id().to_owned(),
+                            Some(99999999),
+                            None
+                        ))?;
+                        store = _store;
 
-                    for fitem in data.items {
-                        audience.push((
-                            depth + 1,
-                            fitem,
-                            user_follower
-                                .as_ref()
-                                .map(|f| f == item.id())
-                                .unwrap_or(false),
-                        ));
+                        for fitem in data.items {
+                            audience.push((
+                                depth + 1,
+                                fitem,
+                                user_follower
+                                    .as_ref()
+                                    .map(|f| f == item.id())
+                                    .unwrap_or(false),
+                            ));
+                        }
                     }
                 }
 
@@ -170,11 +228,7 @@ fn get_handler<T: EntityStore>(
             TrustMode::AssignIDs,
         )),
 
-        as2!(sharedInbox) => Some((
-            vec![],
-            DeliveryMode::LocalOnly,
-            TrustMode::TrustIDs,
-        )),
+        as2!(sharedInbox) => Some((vec![], DeliveryMode::LocalOnly, TrustMode::TrustIDs)),
 
         _ => None,
     }
