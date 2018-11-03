@@ -153,8 +153,8 @@ fn get_handler<T: EntityStore>(
                 Box::new(handlers::VerifyRequiredEventsHandler(false)),
                 Box::new(handlers::ServerCreateHandler),
             ],
-            DeliveryMode::LocalAndRemote,
-            TrustMode::AssignIDs,
+            DeliveryMode::None,
+            TrustMode::TrustIDs,
         )),
 
         as2!(outbox) => Some((
@@ -166,8 +166,8 @@ fn get_handler<T: EntityStore>(
                 Box::new(handlers::ClientLikeHandler),
                 Box::new(handlers::ClientUndoHandler),
             ],
-            DeliveryMode::None,
-            TrustMode::TrustIDs,
+            DeliveryMode::LocalAndRemote,
+            TrustMode::AssignIDs,
         )),
 
         _ => None,
