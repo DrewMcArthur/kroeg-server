@@ -170,6 +170,12 @@ fn get_handler<T: EntityStore>(
             TrustMode::AssignIDs,
         )),
 
+        as2!(sharedInbox) => Some((
+            vec![],
+            DeliveryMode::LocalOnly,
+            TrustMode::TrustIDs,
+        )),
+
         _ => None,
     }
 }
