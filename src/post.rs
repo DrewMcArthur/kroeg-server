@@ -19,7 +19,12 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     id: String,
     store: T,
     mut queue: Q,
+    local: bool,
 ) -> Result<(Context, String, T, Q), (T::Error, T)> {
+    if local {
+        panic!("todo");
+    }
+
     let (obj, store) = await!(store.get(id, true))?;
     let obj = obj.unwrap();
 
@@ -128,6 +133,47 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     Ok((context, obj.id().to_owned(), store, queue))
 }
 
+enum DeliveryMode {
+    LocalAndRemote,
+    LocalOnly,
+    None,
+}
+
+enum TrustMode {
+    TrustIDs,
+    AssignIDs,
+}
+
+fn get_handler<T: EntityStore>(
+    box_type: &str,
+) -> Option<(Vec<Box<MessageHandler<T>>>, DeliveryMode, TrustMode)> {
+    match box_type {
+        ldp!(inbox) => Some((
+            vec![
+                Box::new(handlers::VerifyRequiredEventsHandler(false)),
+                Box::new(handlers::ServerCreateHandler),
+            ],
+            DeliveryMode::LocalAndRemote,
+            TrustMode::AssignIDs,
+        )),
+
+        as2!(outbox) => Some((
+            vec![
+                Box::new(handlers::AutomaticCreateHandler),
+                Box::new(handlers::VerifyRequiredEventsHandler(true)),
+                Box::new(handlers::ClientCreateHandler),
+                Box::new(handlers::CreateActorHandler),
+                Box::new(handlers::ClientLikeHandler),
+                Box::new(handlers::ClientUndoHandler),
+            ],
+            DeliveryMode::None,
+            TrustMode::TrustIDs,
+        )),
+
+        _ => None,
+    }
+}
+
 pub fn post<T: EntityStore, Q: QueueStore>(
     context: Context,
     store: T,
@@ -173,9 +219,8 @@ pub fn post<T: EntityStore, Q: QueueStore>(
         }).and_then(move |(store, val, item)| {
             if let Some(mut item) = item {
                 let user_inoutbox = item.id().to_owned();
-                let is_box = &item.meta()[kroeg!(box)];
-                let is_inbox = is_box.contains(&Pointer::Id(ldp!(inbox).to_owned()));
-                let is_outbox = is_box.contains(&Pointer::Id(as2!(outbox).to_owned()));
+                let box_type = item.meta()[kroeg!(box)].get(0).and_then(|f| match f { Pointer::Id(id) => Some(id), _ => None });
+                let handlers = box_type.and_then(|f| get_handler(f));
                 let root = val
                     .as_array()
                     .and_then(|f| f.get(0))
@@ -184,19 +229,20 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     .and_then(|f| f.as_str())
                     .map(|f| f.to_owned());
 
-                if (!is_inbox && !is_outbox) || (is_inbox && is_outbox) {
-                    return Either::B(future::ok((
-                        false,
+                let (handlers, delivery_mode, trust_mode) = match handlers {
+                    Some(val) => val,
+                    None => return Either::B(future::ok((
+                        None,
                         context,
                         store,
                         vec![],
                         HashMap::new(),
                         user_inoutbox,
-                    )));
-                }
+                    ))),
+                };
 
                 let mut untangled = untangle(val).unwrap();
-                if is_inbox {
+                if let TrustMode::TrustIDs = trust_mode {
                     // Inboxes, aka server-to-server, we do not trust anything
                     // that isn't on the same origin as the authorized user.
 
@@ -210,7 +256,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                             == authority
                     });
                     Either::B(future::ok((
-                        is_inbox,
+                        Some((handlers, delivery_mode)),
                         context,
                         store,
                         vec![root],
@@ -224,13 +270,13 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     Either::A(
                         assign_ids(context, store, Some(user), untangled)
                             .map(move |(context, store, roots, untangled)|
-                                (is_inbox, context, store, roots, untangled, user_inoutbox)
+                                (Some((handlers, delivery_mode)), context, store, roots, untangled, user_inoutbox)
                             ).map_err(|(e, store)| (ServerError::StoreError(e), store)),
                     )
                 }
             } else {
                 Either::B(future::ok((
-                    false,
+                    None,
                     context,
                     store,
                     vec![],
@@ -239,32 +285,22 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                 )))
             }
         }).and_then(
-            |(is_inbox, context, store, roots, untangled, user_inoutbox)| {
+            |(box_handler, context, store, roots, untangled, user_inoutbox)| {
                 StoreAllFuture::new(store, untangled.into_iter().map(|(_, v)| v).collect())
-                    .map(move |store| (is_inbox, context, store, roots, user_inoutbox))
+                    .map(move |store| (box_handler, context, store, roots, user_inoutbox))
                     .map_err(|(e, store)| (ServerError::StoreError(e), store))
             },
-        ).and_then(move |(is_inbox, context, store, roots, user_inoutbox)| {
-            let handlers: Vec<Box<MessageHandler<T>>> = if is_inbox {
-                vec![
-                    Box::new(handlers::VerifyRequiredEventsHandler(false)),
-                    Box::new(handlers::ServerCreateHandler),
-                ]
-            } else {
-                vec![
-                    Box::new(handlers::AutomaticCreateHandler),
-                    Box::new(handlers::VerifyRequiredEventsHandler(true)),
-                    Box::new(handlers::ClientCreateHandler),
-                    Box::new(handlers::CreateActorHandler),
-                    Box::new(handlers::ClientLikeHandler),
-                    Box::new(handlers::ClientUndoHandler),
-                ]
-            };
-
+        ).and_then(move |(box_handler, context, store, roots, user_inoutbox)| {
             let id = roots.into_iter().next();
             if id.is_none() {
+                println!(" [ ] ignored POST cause we have no data?");
                 return Either::A(Either::A(future::ok((context, store, queue, None, user_inoutbox))));
             }
+
+            let (handlers, delivery_mode) = match box_handler {
+                Some(val) => val,
+                None => { return Either::A(Either::A(future::ok((context, store, queue, None, user_inoutbox)))); },
+            };
 
             let id = id.unwrap();
 
@@ -278,16 +314,22 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                 },
             );
 
-            if is_inbox {
-                Either::B(end.map(move |((context, store, id), user_inoutbox)| (context, store, queue, Some(id), user_inoutbox)))
-            } else {
-                Either::A(Either::B(
+            match delivery_mode {
+                DeliveryMode::None => Either::B(Either::A(end.map(move |((context, store, id), user_inoutbox)| (context, store, queue, Some(id), user_inoutbox)))),
+                DeliveryMode::LocalAndRemote => Either::A(Either::B(
                     end.and_then(|((context, store, id), user_inoutbox)|
-                        prepare_delivery(context, id, store, queue)
+                        prepare_delivery(context, id, store, queue, false)
                         .map_err(|(e, store)| (ServerError::StoreError(e), store))
                         .map(move |(context, id, store, queue)| (context, store, queue, Some(id), user_inoutbox))
                     )
-                ))
+                )),
+                DeliveryMode::LocalOnly => Either::B(Either::B(
+                    end.and_then(|((context, store, id), user_inoutbox)|
+                        prepare_delivery(context, id, store, queue, true)
+                        .map_err(|(e, store)| (ServerError::StoreError(e), store))
+                        .map(move |(context, id, store, queue)| (context, store, queue, Some(id), user_inoutbox))
+                    )
+                )),
             }
         }).and_then(|(_, store, queue, id, user_inoutbox)| {
             if let Some(id) = id {
