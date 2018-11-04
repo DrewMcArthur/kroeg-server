@@ -39,7 +39,7 @@ mod store;
 pub mod webfinger;
 
 use diesel::prelude::*;
-use futures::prelude::*;
+use futures::{prelude::*, stream, Stream};
 
 use authentication::user_from_request;
 use futures::future;
@@ -123,30 +123,34 @@ fn not_found<T: EntityStore, R: QueueStore>(
 }
 
 pub fn launch_delivery(config: config::Config) -> impl Future<Item = (), Error = ()> + Send {
-    let (store, queue) = match (
-        PgConnection::establish(&config.database),
-        PgConnection::establish(&config.database),
-    ) {
-        (Ok(store_db), Ok(queue_db)) => (
-            RetrievingEntityStore::new(
-                QuadClient::new(store_db),
-                config.server.base_uri.to_owned(),
-            ),
-            QuadClient::new(queue_db),
-        ),
+    stream::repeat(config)
+        .fold(0, |iteration, config| {
+            let (store, queue) = match (
+                PgConnection::establish(&config.database),
+                PgConnection::establish(&config.database),
+            ) {
+                (Ok(store_db), Ok(queue_db)) => (
+                    RetrievingEntityStore::new(
+                        QuadClient::new(store_db),
+                        config.server.base_uri.to_owned(),
+                    ),
+                    QuadClient::new(queue_db),
+                ),
 
-        (Err(e), _) | (_, Err(e)) => {
-            panic!("Database connection failed: {}", e);
-        }
-    };
+                (Err(e), _) | (_, Err(e)) => {
+                    panic!("Database connection failed: {}", e);
+                }
+            };
 
-    let context = Context {
-        server_base: config.server.base_uri.to_owned(),
-        instance_id: config.server.instance_id,
-        user: authentication::anonymous(),
-    };
+            let context = Context {
+                server_base: config.server.base_uri.to_owned(),
+                instance_id: config.server.instance_id,
+                user: authentication::anonymous(),
+            };
 
-    delivery::loop_deliver(context, store, queue)
+            delivery::loop_deliver(context, store, queue, iteration).map(move |_| iteration + 1)
+        })
+        .map(|_| ())
 }
 
 impl Service for KroegService {

@@ -15,6 +15,7 @@ use jsonld::nodemap::Pointer;
 use jsonld::{compact, error::CompactionError, JsonLdOptions};
 use kroeg_tap::StoreItem;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
+use post::post;
 use serde_json::Value as JValue;
 
 pub fn escape(s: &str) -> String {
@@ -119,18 +120,21 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
     mut context: Context,
     client: Client<HttpsConnector<HttpConnector>, Body>,
     store: T,
+    queue: R,
     item: R::Item,
 ) -> Result<
     (
         Context,
         Client<HttpsConnector<HttpConnector>, Body>,
         T,
+        R,
         R::Item,
     ),
     (
         Context,
         Client<HttpsConnector<HttpConnector>, Body>,
         T,
+        R,
         R::Item,
         T::Error,
     ),
@@ -149,8 +153,8 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
             let (sdata, store) = match await!(store.get(itemid, false)) {
                 Ok((Some(ok), store)) => (ok, store),
-                Ok((None, store)) => return Ok((context, client, store, item)),
-                Err((err, store)) => return Err((context, client, store, item, err)),
+                Ok((None, store)) => return Ok((context, client, store, queue, item)),
+                Err((err, store)) => return Err((context, client, store, queue, item, err)),
             };
 
             if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
@@ -170,49 +174,77 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
             let (context, data) = await!(compact_with_context(context, data)).unwrap();
 
-            let (_, store) = match await!(store.get(uri.to_owned(), true)) {
+            let (is_local, store) = match await!(store.get(uri.to_owned(), true)) {
                 Ok((Some(val), store)) => (val.is_owned(&context), store),
                 Ok((None, store)) => (false, store),
-                Err((err, store)) => return Err((context, client, store, item, err)),
+                Err((err, store)) => return Err((context, client, store, queue, item, err)),
             };
 
-            let (headers, store) = /*if is_local {
-                /* post::process(context, store, queue, request); */
-            } else */{
+            let (headers, store, queue) = {
                 let mut req = Request::new(Body::from(data.to_string()));
                 *req.method_mut() = Method::POST;
                 *req.uri_mut() = uri.parse().unwrap();
-                req.headers_mut().insert("Content-Type", HeaderValue::from_str("application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"").unwrap());
+                req.headers_mut().insert(
+                    "Content-Type",
+                    HeaderValue::from_str(
+                        "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+                    )
+                    .unwrap(),
+                );
 
-                let (owner, store) = if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
-                    match await!(store.get(id, false)) {
-                        Ok((Some(val), store)) => (val, store),
-                        _ => panic!("todo"),
-                    }
-                } else {
-                    panic!("todo");
+                let actor = match sdata.main()[as2!(actor)].get(0).cloned() {
+                    Some(Pointer::Id(id)) => id.to_owned(),
+                    _ => unimplemented!(),
                 };
 
-                let (key_object, store) = if let Pointer::Id(id) = owner.main()[sec!(publicKey)][0].to_owned() {
-                    match await!(store.get(id, false)) {
+                if !is_local {
+                    let (owner, store) = match await!(store.get(actor, false)) {
                         Ok((Some(val), store)) => (val, store),
                         _ => panic!("todo"),
-                    }
+                    };
+
+                    let (key_object, store) =
+                        if let Pointer::Id(id) = owner.main()[sec!(publicKey)][0].to_owned() {
+                            match await!(store.get(id, false)) {
+                                Ok((Some(val), store)) => (val, store),
+                                _ => panic!("todo"),
+                            }
+                        } else {
+                            panic!("todo")
+                        };
+
+                    create_signature(&data.to_string(), &key_object, &mut req);
+
+                    let response =
+                        match await!(client.request(req).timeout(Duration::from_millis(10000))) {
+                            Ok(val) => val,
+                            Err(err) => {
+                                println!("ERR {:?}", err);
+                                return Ok((context, client, store, queue, item));
+                            }
+                        };
+
+                    let (header, _) = response.into_parts();
+
+                    (header, store, queue)
                 } else {
-                    panic!("todo")
-                };
+                    let mut new_context = context.clone();
+                    new_context.user.subject = actor;
 
-                create_signature(&data.to_string(), &key_object, &mut req);
+                    let (s, q, res) = match await!(post(new_context, store, queue, req)) {
+                        Ok(val) => val,
+                        Err(_) => panic!("cannot recover. oops."),
+                    };
 
-                let response = match await!(client.request(req).timeout(Duration::from_millis(10000))) { Ok(val) => val, Err(err) => { println!("ERR {:?}", err); return Ok((context, client, store, item)); }};
-                let (header, _) = response.into_parts();
+                    let (header, _) = res.into_parts();
 
-                (header, store)
+                    (header, s, q)
+                }
             };
 
             println!(" [+] {} {}", uri, headers.status);
 
-            Ok((context, client, store, item))
+            Ok((context, client, store, queue, item))
         }
 
         _ => {
@@ -233,13 +265,16 @@ pub fn register_delivery<R: QueueStore>(
     ))
 }
 
+use std::panic::AssertUnwindSafe;
+
 #[async]
 pub fn loop_deliver<T: EntityStore, R: QueueStore>(
     mut context: Context,
     mut store: T,
     mut queue: R,
+    iteration: usize,
 ) -> Result<(), ()> {
-    println!("[+] Delivery thread start");
+    println!("[+] Delivery thread start (iteration {})", iteration);
     let connector = HttpsConnector::new(1).unwrap();
     let mut client = Client::builder().build::<_, Body>(connector);
 
@@ -248,20 +283,34 @@ pub fn loop_deliver<T: EntityStore, R: QueueStore>(
         queue = _queue;
         match item {
             Some(val) => {
-                match await!(deliver_one::<T, R>(context, client, store, val)) {
-                    Ok((co, cl, s, item)) => {
+                // (no it's not unwind safe. well, i assume not.)
+                match await!(AssertUnwindSafe(deliver_one::<T, R>(
+                    context, client, store, queue, val
+                ))
+                .catch_unwind()
+                .map_err(|_| ()))
+                {
+                    Ok(Ok((co, cl, s, q, item))) => {
                         context = co;
                         client = cl;
                         store = s;
-                        queue = await!(queue.mark_success(item)).unwrap();
+                        queue = await!(q.mark_success(item)).unwrap();
                     }
-                    Err((co, _cl, s, item, _)) => {
+                    Ok(Err((co, _cl, s, q, item, _))) => {
                         context = co;
                         // client = cl;
                         store = s;
-                        queue = await!(queue.mark_failure(item)).unwrap();
+                        queue = await!(q.mark_failure(item)).unwrap();
 
                         return Err(());
+                    }
+
+                    Err(_) => {
+                        println!("[!!] panic handling delivery. Will try to recover, but this item has been lost to the ages.");
+                        // ok, we're in trouble, we just paniced.
+
+                        // uhm. let's escape and hope the other threads do better.
+                        break Ok(());
                     }
                 };
             }
