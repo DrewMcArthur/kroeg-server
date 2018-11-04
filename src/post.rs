@@ -24,8 +24,11 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
     mut queue: Q,
     local: bool,
 ) -> Result<(Context, String, T, Q), (T::Error, T)> {
-    let (obj, store) = await!(store.get(id, true))?;
-    let obj = obj.unwrap();
+    let (obj, store) = await!(store.get(id.to_owned(), false))?;
+    let obj = match obj {
+        Some(val) => val,
+        None => return Ok((context, id, store, queue)),
+    };
 
     let mut boxes = HashSet::new();
     let mut audience: Vec<(usize, String, bool)> = Vec::new();
