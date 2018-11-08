@@ -313,7 +313,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     let user: Uri = context.user.subject.parse().unwrap();
                     let authority = user.authority_part().cloned();
                     untangled.retain(|k, _| {
-                        k.parse::<Uri>()
+                        if k.starts_with("_:") { &k[2..] } else { k }.parse::<Uri>()
                             .ok()
                             .and_then(|f| f.authority_part().cloned())
                             == authority

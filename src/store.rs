@@ -86,7 +86,11 @@ fn expand_and_unflatten<T: EntityStore>(
         .map(move |value| {
             let mut value = untangle(value).unwrap();
             value.retain(|k, _| {
-                k.parse::<Uri>().ok().map(|f| f.authority_part().cloned()) == authority
+                if k.starts_with("_:") { &k[2..] } else { k }
+                    .parse::<Uri>()
+                    .ok()
+                    .map(|f| f.authority_part().cloned())
+                    == authority
             });
             value
         })
