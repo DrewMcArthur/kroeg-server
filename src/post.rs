@@ -119,19 +119,13 @@ fn prepare_delivery<T: EntityStore, Q: QueueStore>(
                     if is_shared {
                         for endpoint in item.main()[as2!(endpoints)].clone() {
                             if let Pointer::Id(endpoint) = endpoint {
-                                // Resolve both blank and non-blank nodes properly.
-                                // Fixing this requires a lot of work.
-                                let elem = if endpoint.starts_with("_:") {
-                                    item.sub(&endpoint).unwrap().clone()
-                                } else {
-                                    let (item, _store) = await!(store.get(endpoint, true))?;
-                                    store = _store;
-                                    item.unwrap().main().clone()
-                                };
+                                let (item, _store) = await!(store.get(endpoint, true))?;
+                                store = _store;
+                                let elem = item.unwrap();
 
-                                for inbox in elem[as2!(sharedInbox)].clone() {
+                                for inbox in &elem.main()[as2!(sharedInbox)] {
                                     if let Pointer::Id(inbox) = inbox {
-                                        boxes.insert(inbox);
+                                        boxes.insert(inbox.clone());
                                         has_shared = true;
                                     }
                                 }
