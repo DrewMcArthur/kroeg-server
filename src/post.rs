@@ -225,7 +225,11 @@ fn get_handler<T: EntityStore>(
             TrustMode::AssignIDs,
         )),
 
-        as2!(sharedInbox) => Some((vec![], DeliveryMode::LocalOnly, TrustMode::TrustIDs)),
+        as2!(sharedInbox) => Some((
+            vec![Box::new(handlers::VerifyRequiredEventsHandler(false))],
+            DeliveryMode::LocalOnly,
+            TrustMode::TrustIDs,
+        )),
 
         _ => None,
     }
