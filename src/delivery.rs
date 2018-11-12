@@ -1,6 +1,8 @@
 use base64;
 use futures::prelude::{await, *};
-use kroeg_tap::{assemble, Context, DefaultAuthorizer, EntityStore, QueueItem, QueueStore};
+use kroeg_tap::{
+    assemble, Context, DefaultAuthorizer, EntityStore, LocalOnlyAuthorizer, QueueItem, QueueStore,
+};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -161,23 +163,27 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
                 context.user.subject = id;
             }
 
-            let (_, nstore, _, data) = await!(assemble(
-                sdata.clone(),
-                0,
-                Some(store),
-                DefaultAuthorizer::new(&context),
-                HashSet::new()
-            ))
-            .unwrap();
-
-            let store = nstore.unwrap();
-
-            let (context, data) = await!(compact_with_context(context, data)).unwrap();
-
             let (is_local, store) = match await!(store.get(uri.to_owned(), true)) {
                 Ok((Some(val), store)) => (val.is_owned(&context), store),
                 Ok((None, store)) => (false, store),
                 Err((err, store)) => return Err((context, client, store, queue, item, err)),
+            };
+
+            let (store, context, data) = if is_local {
+                (store, context, json!({ "@id": sdata.id() }))
+            } else {
+                let (_, store, _, data) = await!(assemble(
+                    sdata.clone(),
+                    0,
+                    Some(store),
+                    LocalOnlyAuthorizer::new(&context, DefaultAuthorizer::new(&context)),
+                    HashSet::new()
+                ))
+                .unwrap();
+
+                let (context, data) = await!(compact_with_context(context, data)).unwrap();
+
+                (store.unwrap(), context, data)
             };
 
             let (headers, store, queue) = {
@@ -233,7 +239,7 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
 
                     let (s, q, res) = match await!(post(new_context, store, queue, req)) {
                         Ok(val) => val,
-                        Err(_) => panic!("cannot recover. oops."),
+                        Err((e, _)) => panic!("cannot recover. oops. {}", e),
                     };
 
                     let (header, _) = res.into_parts();
