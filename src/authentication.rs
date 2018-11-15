@@ -177,7 +177,7 @@ pub fn user_from_request<R: EntityStore>(
         .and_then(|f| f.to_str().ok().map(str::to_string))
     {
         let bearer: Vec<_> = val.split(' ').map(str::to_string).collect();
-        if bearer[0] == "Bearer" {
+        if bearer[0] == "Bearer" && bearer.len() == 2 {
             let (nstore, user) = await!(verify(store, bearer[1].to_owned()))?;
             store = nstore;
             if let Some(user) = user {
