@@ -307,23 +307,33 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     // Inboxes, aka server-to-server, we do not trust anything
                     // that isn't on the same origin as the authorized user.
 
-                    let mut root = root.unwrap();
-                    let user: Uri = context.user.subject.parse().unwrap();
-                    let authority = user.authority_part().cloned();
-                    untangled.retain(|k, _| {
-                        if k.starts_with("_:") { &k[2..] } else { k }.parse::<Uri>()
-                            .ok()
-                            .and_then(|f| f.authority_part().cloned())
-                            == authority
-                    });
-                    Either::B(future::ok((
-                        Some((handlers, delivery_mode)),
-                        context,
-                        store,
-                        vec![root],
-                        untangled,
-                        user_inoutbox,
-                    )))
+                    if let Some(root) = root {
+                        let user: Uri = context.user.subject.parse().unwrap();
+                        let authority = user.authority_part().cloned();
+                        untangled.retain(|k, _| {
+                            if k.starts_with("_:") { &k[2..] } else { k }.parse::<Uri>()
+                                .ok()
+                                .and_then(|f| f.authority_part().cloned())
+                                == authority
+                        });
+                        Either::B(future::ok((
+                            Some((handlers, delivery_mode)),
+                            context,
+                            store,
+                            vec![root],
+                            untangled,
+                            user_inoutbox,
+                        )))
+                    } else {
+                        Either::B(future::ok((
+                            None,
+                            context,
+                            store,
+                            vec![],
+                            untangled,
+                            user_inoutbox,
+                        )))
+                    }
                 } else {
                     // Outboxes, on the other hand, we do not trust any incoming
                     // IDs, and generate our own.
