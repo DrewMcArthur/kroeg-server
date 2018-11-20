@@ -31,7 +31,7 @@ pub mod config;
 pub mod context;
 pub mod delivery;
 pub mod get;
-mod jwt;
+pub mod jwt;
 pub mod post;
 pub mod request;
 pub mod router;
