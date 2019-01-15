@@ -123,11 +123,11 @@ fn not_found<T: EntityStore, R: QueueStore>(
 pub fn launch_delivery(config: config::Config) -> impl Future<Item = (), Error = ()> + Send {
     stream::repeat(config)
         .fold(0, |iteration, config| {
+            let db = config.database.clone();
             CellarEntityStore::new(&config.database)
+                .and_then(move |store| CellarEntityStore::new(&db).map(move |s| (store, s)))
                 .map_err(|e| panic!(e))
-                .and_then(move |store| {
-                    let queue = ();
-
+                .and_then(move |(store, queue)| {
                     let context = Context {
                         server_base: config.server.base_uri.to_owned(),
                         instance_id: config.server.instance_id,
