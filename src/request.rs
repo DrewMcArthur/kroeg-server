@@ -116,7 +116,7 @@ impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
                     }
                 }
 
-                Some(StoreState::GetOriginal(ref mut future)) => match future.poll() {
+                Some(StoreState::GetOriginal(mut future)) => match future.poll() {
                     Ok(Async::Ready((Some(mut prev_item), store))) => {
                         let mut item = self.todo.remove(0);
                         if prev_item.meta()[kroeg!(instance)] == item.meta()[kroeg!(instance)] {
@@ -131,14 +131,14 @@ impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
                         StoreState::WriteNew(store.put(item.id().to_owned(), item))
                     }
 
-                    Ok(Async::NotReady) => break Ok(Async::NotReady),
+                    Ok(Async::NotReady) => { self.state = Some(StoreState::GetOriginal(future)); break Ok(Async::NotReady) }
                     Err(e) => break Err(e),
                 },
 
-                Some(StoreState::WriteNew(ref mut future)) => match future.poll() {
+                Some(StoreState::WriteNew(mut future)) => match future.poll() {
                     Ok(Async::Ready((_, store))) => StoreState::Idle(store),
 
-                    Ok(Async::NotReady) => break Ok(Async::NotReady),
+                    Ok(Async::NotReady) => { self.state = Some(StoreState::WriteNew(future)); break Ok(Async::NotReady) }
                     Err(e) => break Err(e),
                 },
 
