@@ -2,7 +2,6 @@
 
 extern crate base64;
 extern crate chashmap;
-extern crate diesel;
 extern crate dotenv;
 extern crate futures_await as futures;
 extern crate hyper;
@@ -22,7 +21,6 @@ extern crate serde_json;
 #[path = "../config.rs"]
 mod config;
 
-use diesel::prelude::*;
 use futures::prelude::{await, *};
 use jsonld::nodemap::{Pointer, Value};
 use kroeg_cellar::QuadClient;
@@ -88,20 +86,20 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), (T:
         "{}.{}",
         base64::encode_config(
             json!({
-            "typ": "JWT",
-            "alg": "RS256",
-            "kid": keyid
-        })
+                "typ": "JWT",
+                "alg": "RS256",
+                "kid": keyid
+            })
             .to_string()
             .as_bytes(),
             base64::URL_SAFE_NO_PAD
         ),
         base64::encode_config(
             json!({
-            "iss": "kroeg-call",
-            "sub": person.id(),
-            "exp": 0xFFFFFFFFu32
-        })
+                "iss": "kroeg-call",
+                "sub": person.id(),
+                "exp": 0xFFFFFFFFu32
+            })
             .to_string()
             .as_bytes(),
             base64::URL_SAFE_NO_PAD

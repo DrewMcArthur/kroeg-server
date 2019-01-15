@@ -8,7 +8,12 @@ use super::ServerError;
 
 /// An alias for the function type of the request handler that is expected to be implemented.
 pub type RequestHandler<T, R> = Box<
-    Fn(Context, T, R, Request<Body>)
+    Fn(
+            Context,
+            T,
+            R,
+            Request<Body>,
+        )
             -> Box<Future<Item = (T, R, Response<Body>), Error = (ServerError<T>, T)> + Send + 'static>
         + Send
         + Sync,

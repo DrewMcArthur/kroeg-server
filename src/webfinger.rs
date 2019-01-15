@@ -79,14 +79,14 @@ fn handle_webfinger<T: EntityStore, R: QueueStore>(
                 let uri: Uri = user.id().parse().unwrap();
 
                 let response = json!({
-                "subject": format!("acct:{}@{}", username, uri.authority_part().unwrap()),
-                "aliases": [user.id()],
-                "links": [{
-                    "rel": "self",
-                    "type": "application/activity+json",
-                    "href": user.id()
-                }]
-            });
+                    "subject": format!("acct:{}@{}", username, uri.authority_part().unwrap()),
+                    "aliases": [user.id()],
+                    "links": [{
+                        "rel": "self",
+                        "type": "application/activity+json",
+                        "href": user.id()
+                    }]
+                });
 
                 Response::builder()
                     .status(200)

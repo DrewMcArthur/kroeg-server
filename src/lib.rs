@@ -11,7 +11,6 @@ extern crate kroeg_tap;
 
 extern crate base64;
 extern crate chashmap;
-extern crate diesel;
 extern crate dotenv;
 extern crate futures_await as futures;
 extern crate http;
@@ -38,7 +37,6 @@ pub mod router;
 mod store;
 pub mod webfinger;
 
-use diesel::prelude::*;
 use futures::{prelude::*, stream, Stream};
 
 use authentication::user_from_request;
@@ -46,7 +44,7 @@ use futures::future;
 use hyper::service::{NewService, Service};
 use hyper::{Body, Request, Response, StatusCode};
 use jsonld::error::{CompactionError, ExpansionError};
-use kroeg_cellar::QuadClient;
+use kroeg_cellar::CellarEntityStore;
 use kroeg_tap::{Context, EntityStore, QueueStore};
 use router::Route;
 use serde_json::Value;
@@ -104,7 +102,7 @@ impl<T: EntityStore> error::Error for ServerError<T> {
 #[derive(Clone)]
 pub struct KroegService {
     config: config::Config,
-    routes: Vec<Route<RetrievingEntityStore<QuadClient>, QuadClient>>,
+    routes: Vec<Route<RetrievingEntityStore<CellarEntityStore>, CellarEntityStore>>,
 }
 
 /// Helper function, that allows the router to fall back to 404 easily.
@@ -125,30 +123,20 @@ fn not_found<T: EntityStore, R: QueueStore>(
 pub fn launch_delivery(config: config::Config) -> impl Future<Item = (), Error = ()> + Send {
     stream::repeat(config)
         .fold(0, |iteration, config| {
-            let (store, queue) = match (
-                PgConnection::establish(&config.database),
-                PgConnection::establish(&config.database),
-            ) {
-                (Ok(store_db), Ok(queue_db)) => (
-                    RetrievingEntityStore::new(
-                        QuadClient::new(store_db),
-                        config.server.base_uri.to_owned(),
-                    ),
-                    QuadClient::new(queue_db),
-                ),
+            CellarEntityStore::new(&config.database)
+                .map_err(|e| panic!(e))
+                .and_then(move |store| {
+                    let queue = ();
 
-                (Err(e), _) | (_, Err(e)) => {
-                    panic!("Database connection failed: {}", e);
-                }
-            };
+                    let context = Context {
+                        server_base: config.server.base_uri.to_owned(),
+                        instance_id: config.server.instance_id,
+                        user: authentication::anonymous(),
+                    };
 
-            let context = Context {
-                server_base: config.server.base_uri.to_owned(),
-                instance_id: config.server.instance_id,
-                user: authentication::anonymous(),
-            };
-
-            delivery::loop_deliver(context, store, queue, iteration).map(move |_| iteration + 1)
+                    delivery::loop_deliver(context, store, queue, iteration)
+                        .map(move |_| iteration + 1)
+                })
         })
         .map(|_| ())
 }
@@ -157,79 +145,68 @@ impl Service for KroegService {
     type ReqBody = Body;
     type ResBody = Body;
 
-    type Error = ServerError<RetrievingEntityStore<QuadClient>>;
+    type Error = ServerError<RetrievingEntityStore<CellarEntityStore>>;
     type Future = Box<Future<Item = Response<Body>, Error = Self::Error> + Send>;
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let base = self.config.server.base_uri.to_owned();
+        let config = self.config.clone();
+        let routes = self.routes.clone();
+        let db = self.config.database.clone();
         // When an incoming request gets handled, the first thing needed is connections to the database.
         // For legacy design reasons, for now, we'll open two connections. One for the quad store, one for the queue.
-        let (store, queue) = match (
-            PgConnection::establish(&self.config.database),
-            PgConnection::establish(&self.config.database),
-        ) {
-            (Ok(store_db), Ok(queue_db)) => (
-                RetrievingEntityStore::new(
-                    QuadClient::new(store_db),
-                    self.config.server.base_uri.to_owned(),
-                ),
-                QuadClient::new(queue_db),
-            ),
-
-            (Err(e), _) | (_, Err(e)) => {
-                eprintln!("Database connection failed: {}", e);
-
-                return Box::new(future::ok(
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from("Database connection failed."))
-                        .unwrap(),
-                ));
-            }
-        };
-
-        let routes = self.routes.clone();
-        let (parts, body) = req.into_parts();
-
         Box::new(
-            user_from_request(self.config.clone(), parts, store)
-                .then(move |result| match result {
-                    Ok((config, parts, store, user)) => {
-                        let request = Request::from_parts(parts, body);
+            CellarEntityStore::new(&self.config.database)
+                .and_then(move |store| CellarEntityStore::new(&db).map(move |s| (store, s)))
+                .map_err(|e| {
+                    println!("{:?}", e);
+                    panic!(e)
+                }) //ServerError::HandlerError(e.into()))
+                .and_then(move |(store, queue)| {
+                    let store = RetrievingEntityStore::new(store, base);
+                    let (parts, body) = req.into_parts();
+                    user_from_request(config, parts, store)
+                        .then(move |result| match result {
+                            Ok((config, parts, store, user)) => {
+                                let request = Request::from_parts(parts, body);
 
-                        let context = Context {
-                            server_base: config.server.base_uri.to_owned(),
-                            instance_id: config.server.instance_id,
-                            user: user,
-                        };
+                                let context = Context {
+                                    server_base: config.server.base_uri.to_owned(),
+                                    instance_id: config.server.instance_id,
+                                    user: user,
+                                };
 
-                        let route = routes
-                            .iter()
-                            .rev()
-                            .find(|f| f.can_handle(&request))
-                            .map(|f| f.handler.clone())
-                            .unwrap_or_else(|| Arc::new(Box::new(not_found)));
+                                let route = routes
+                                    .iter()
+                                    .rev()
+                                    .find(|f| f.can_handle(&request))
+                                    .map(|f| f.handler.clone())
+                                    .unwrap_or_else(|| Arc::new(Box::new(not_found)));
 
-                        route(context, store, queue, request)
-                    }
+                                route(context, store, queue, request)
+                            }
 
-                    Err((e, store)) => Box::new(future::err((ServerError::StoreError(e), store))),
-                })
-                // Handlers return a tuple (EntityStore, QueueStore, Response) but we need to return a Response<Body>.
-                // so, we drop the EntityStore and QueueStore. (note to self: bring transactions back)
-                .then(|result| {
-                    match result {
-                        Ok((.., response)) => Ok(response),
-                        Err((err, _)) => {
-                            eprintln!("Error handling request: {}", err);
+                            Err((e, store)) => {
+                                Box::new(future::err((ServerError::StoreError(e), store)))
+                            }
+                        })
+                        // Handlers return a tuple (EntityStore, QueueStore, Response) but we need to return a Response<Body>.
+                        // so, we drop the EntityStore and QueueStore. (note to self: bring transactions back)
+                        .then(|result| {
+                            match result {
+                                Ok((.., response)) => Ok(response),
+                                Err((err, _)) => {
+                                    eprintln!("Error handling request: {}", err);
 
-                            // If the Service returns an error, the connection with the client will just drop.
-                            // This doesn't seem like the best way to go, so return a 500 instead.
-                            Ok(Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                .body(Body::from(format!("error: {}", err)))
-                                .unwrap())
-                        }
-                    }
+                                    // If the Service returns an error, the connection with the client will just drop.
+                                    // This doesn't seem like the best way to go, so return a 500 instead.
+                                    Ok(Response::builder()
+                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                        .body(Body::from(format!("error: {}", err)))
+                                        .unwrap())
+                                }
+                            }
+                        })
                 }),
         )
     }
@@ -237,13 +214,13 @@ impl Service for KroegService {
 
 pub struct KroegServiceBuilder {
     pub config: config::Config,
-    pub routes: Vec<Route<RetrievingEntityStore<QuadClient>, QuadClient>>,
+    pub routes: Vec<Route<RetrievingEntityStore<CellarEntityStore>, CellarEntityStore>>,
 }
 
 impl NewService for KroegServiceBuilder {
     type ReqBody = Body;
     type ResBody = Body;
-    type Error = ServerError<RetrievingEntityStore<QuadClient>>;
+    type Error = ServerError<RetrievingEntityStore<CellarEntityStore>>;
     type Service = KroegService;
     type Future = future::FutureResult<KroegService, Self::Error>;
     type InitError = Self::Error;

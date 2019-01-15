@@ -170,7 +170,11 @@ pub fn deliver_one<T: EntityStore, R: QueueStore>(
             };
 
             let (store, context, data) = if is_local {
-                (store, context, json!({ "@id": sdata.id(), "@type": [kroeg!(DeliveryObject)] }))
+                (
+                    store,
+                    context,
+                    json!({ "@id": sdata.id(), "@type": [kroeg!(DeliveryObject)] }),
+                )
             } else {
                 let (_, store, _, data) = await!(assemble(
                     sdata.clone(),

@@ -137,7 +137,7 @@ pub fn get<T: EntityStore, R: QueueStore>(
                     let response = response
                         .status(404)
                         .body(json!({
-                            "@type": "https://puckipedia.com/kroeg/ns#NotFound", 
+                            "@type": "https://puckipedia.com/kroeg/ns#NotFound",
                             as2!(content): "Not found"
                         }))
                         .unwrap();

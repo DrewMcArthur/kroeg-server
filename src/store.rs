@@ -124,8 +124,9 @@ fn retrieve_and_store<T: EntityStore>(
 
 fn make_retrieving<T, Q, E: EntityStore>(
     base: String,
-) -> impl FnOnce(Result<(T, E), (Q, E)>)
-    -> Result<(T, RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
+) -> impl FnOnce(
+    Result<(T, E), (Q, E)>,
+) -> Result<(T, RetrievingEntityStore<E>), (Q, RetrievingEntityStore<E>)> {
     move |f| match f {
         Ok((item, store)) => Ok((item, RetrievingEntityStore(store, base))),
         Err((item, store)) => Err((item, RetrievingEntityStore(store, base))),
@@ -150,7 +151,13 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
         Box<Future<Item = (StoreItem, Self), Error = (Self::Error, Self)> + 'static + Send>;
     type ReadCollectionFuture =
         Box<Future<Item = (CollectionPointer, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type FindCollectionFuture =
+        Box<Future<Item = (CollectionPointer, Self), Error = (Self::Error, Self)> + 'static + Send>;
+    type ReadCollectionInverseFuture =
+        Box<Future<Item = (CollectionPointer, Self), Error = (Self::Error, Self)> + 'static + Send>;
     type WriteCollectionFuture =
+        Box<Future<Item = Self, Error = (Self::Error, Self)> + 'static + Send>;
+    type RemoveCollectionFuture =
         Box<Future<Item = Self, Error = (Self::Error, Self)> + 'static + Send>;
     type QueryFuture =
         Box<Future<Item = (Vec<Vec<String>>, Self), Error = (Self::Error, Self)> + 'static + Send>;
@@ -181,9 +188,9 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
                                 StoreItem::parse(
                                     as2!(Public),
                                     json!({
-                                    "@id": as2!(Public),
-                                    "@type": [as2!(Collection)]
-                                }),
+                                        "@id": as2!(Public),
+                                        "@type": [as2!(Collection)]
+                                    }),
                                 )
                                 .ok(),
                                 store,
@@ -236,7 +243,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
         )
     }
 
-    fn read_collection_inverse(self, item: String) -> Self::ReadCollectionFuture {
+    fn read_collection_inverse(self, item: String) -> Self::ReadCollectionInverseFuture {
         Box::new(
             self.0
                 .read_collection_inverse(item)
@@ -245,7 +252,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
         )
     }
 
-    fn find_collection(self, path: String, item: String) -> Self::ReadCollectionFuture {
+    fn find_collection(self, path: String, item: String) -> Self::FindCollectionFuture {
         Box::new(
             self.0
                 .find_collection(path, item)
@@ -263,7 +270,7 @@ impl<T: EntityStore> EntityStore for RetrievingEntityStore<T> {
         )
     }
 
-    fn remove_collection(self, path: String, item: String) -> Self::WriteCollectionFuture {
+    fn remove_collection(self, path: String, item: String) -> Self::RemoveCollectionFuture {
         Box::new(
             self.0
                 .remove_collection(path, item)
