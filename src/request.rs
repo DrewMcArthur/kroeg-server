@@ -107,8 +107,8 @@ impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            let new_state = match self.state.take().unwrap() {
-                StoreState::Idle(store) => {
+            let new_state = match self.state.take() {
+                Some(StoreState::Idle(store)) => {
                     if self.todo.len() > 0 {
                         StoreState::GetOriginal(store.get(self.todo[0].id().to_owned(), true))
                     } else {
@@ -116,7 +116,7 @@ impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
                     }
                 }
 
-                StoreState::GetOriginal(ref mut future) => match future.poll() {
+                Some(StoreState::GetOriginal(ref mut future)) => match future.poll() {
                     Ok(Async::Ready((Some(mut prev_item), store))) => {
                         let mut item = self.todo.remove(0);
                         if prev_item.meta()[kroeg!(instance)] == item.meta()[kroeg!(instance)] {
@@ -135,12 +135,14 @@ impl<T: EntityStore + 'static> Future for StoreAllFuture<T> {
                     Err(e) => break Err(e),
                 },
 
-                StoreState::WriteNew(ref mut future) => match future.poll() {
+                Some(StoreState::WriteNew(ref mut future)) => match future.poll() {
                     Ok(Async::Ready((_, store))) => StoreState::Idle(store),
 
                     Ok(Async::NotReady) => break Ok(Async::NotReady),
                     Err(e) => break Err(e),
                 },
+
+                None => break Ok(Async::NotReady),
             };
 
             self.state = Some(new_state);
