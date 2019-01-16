@@ -296,7 +296,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                         None,
                         context,
                         store,
-                        vec![],
+                        None,
                         HashMap::new(),
                         user_inoutbox,
                     ))),
@@ -320,7 +320,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                             Some((handlers, delivery_mode)),
                             context,
                             store,
-                            vec![root],
+                            Some(root),
                             untangled,
                             user_inoutbox,
                         )))
@@ -329,7 +329,7 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                             None,
                             context,
                             store,
-                            vec![],
+                            None,
                             untangled,
                             user_inoutbox,
                         )))
@@ -339,9 +339,9 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     // IDs, and generate our own.
                     let user = context.user.subject.to_owned();
                     Either::A(
-                        assign_ids(context, store, Some(user), untangled)
-                            .map(move |(context, store, roots, untangled)|
-                                (Some((handlers, delivery_mode)), context, store, roots, untangled, user_inoutbox)
+                        assign_ids(context, store, Some(user), untangled, root)
+                            .map(move |(context, store, root, untangled)|
+                                (Some((handlers, delivery_mode)), context, store, root, untangled, user_inoutbox)
                             ).map_err(|(e, store)| (ServerError::StoreError(e), store)),
                     )
                 }
@@ -350,19 +350,18 @@ pub fn post<T: EntityStore, Q: QueueStore>(
                     None,
                     context,
                     store,
-                    vec![],
+                    None,
                     HashMap::new(),
                     String::new(),
                 )))
             }
         }).and_then(
-            |(box_handler, context, store, roots, untangled, user_inoutbox)| {
+            |(box_handler, context, store, root, untangled, user_inoutbox)| {
                 StoreAllFuture::new(store, untangled.into_iter().map(|(_, v)| v).collect())
-                    .map(move |store| (box_handler, context, store, roots, user_inoutbox))
+                    .map(move |store| (box_handler, context, store, root, user_inoutbox))
                     .map_err(|(e, store)| (ServerError::StoreError(e), store))
             },
-        ).and_then(move |(box_handler, context, store, roots, user_inoutbox)| {
-            let id = roots.into_iter().next();
+        ).and_then(move |(box_handler, context, store, id, user_inoutbox)| {
             if id.is_none() {
                 println!(" [ ] ignored POST cause we have no data?");
                 return Either::A(Either::A(future::ok((context, store, queue, None, user_inoutbox))));
