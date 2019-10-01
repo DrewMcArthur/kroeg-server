@@ -1,30 +1,3 @@
-#![feature(generators)]
-
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate serde_json;
-#[macro_use]
-extern crate kroeg_tap;
-
-extern crate base64;
-extern crate chashmap;
-extern crate dotenv;
-extern crate futures_await as futures;
-extern crate http;
-extern crate hyper;
-extern crate hyper_tls;
-extern crate jsonld;
-extern crate kroeg_cellar;
-extern crate kroeg_tap_activitypub;
-extern crate openssl;
-extern crate serde;
-extern crate sha2;
-extern crate tokio;
-extern crate toml;
-
 mod authentication;
 pub mod config;
 pub mod context;
@@ -37,38 +10,36 @@ pub mod router;
 mod store;
 pub mod webfinger;
 
-use futures::{prelude::*, stream, Stream};
-
-use authentication::user_from_request;
-use futures::future;
-use hyper::service::{NewService, Service};
-use hyper::{Body, Request, Response, StatusCode};
+use http::StatusCode;
+use http_service::{Body, HttpService, Request, Response};
 use jsonld::error::{CompactionError, ExpansionError};
-use kroeg_cellar::CellarEntityStore;
-use kroeg_tap::{Context, EntityStore, QueueStore};
-use router::Route;
-use serde_json::Value;
+use kroeg_cellar::{CellarConnection, CellarEntityStore};
+use kroeg_tap::{Context, StoreError};
+use std::error::Error;
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::{error, fmt};
-use store::RetrievingEntityStore;
+
+use crate::store::RetrievingEntityStore;
 
 #[derive(Debug)]
-pub enum ServerError<T: EntityStore> {
-    HyperError(hyper::Error),
+pub enum ServerError {
+    HttpError(surf::Exception),
     SerdeError(serde_json::Error),
-    StoreError(T::Error),
-    ExpansionError(ExpansionError<context::HyperContextLoader>),
-    CompactionError(CompactionError<context::HyperContextLoader>),
-    HandlerError(Box<error::Error + Send + Sync + 'static>),
+    StoreError(StoreError),
+    ExpansionError(ExpansionError<context::SurfContextLoader>),
+    CompactionError(CompactionError<context::SurfContextLoader>),
+    HandlerError(Box<dyn Error + Send + Sync + 'static>),
     PostToNonbox,
     BadSharedInbox,
     Test,
 }
 
-impl<T: EntityStore> fmt::Display for ServerError<T> {
+impl fmt::Display for ServerError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ServerError::HyperError(err) => write!(f, "hyper error: {}", err),
+            ServerError::HttpError(err) => write!(f, "web client error: {}", err),
             ServerError::SerdeError(err) => write!(f, "serde error: {}", err),
             ServerError::StoreError(err) => write!(f, "store error: {}", err),
             ServerError::ExpansionError(err) => write!(f, "expansion error: {}", err),
@@ -83,12 +54,12 @@ impl<T: EntityStore> fmt::Display for ServerError<T> {
     }
 }
 
-impl<T: EntityStore> error::Error for ServerError<T> {
-    fn cause(&self) -> Option<&error::Error> {
+impl Error for ServerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            ServerError::HyperError(err) => Some(err),
+            ServerError::HttpError(err) => Some(err.as_ref()),
             ServerError::SerdeError(err) => Some(err),
-            ServerError::StoreError(err) => Some(err),
+            ServerError::StoreError(err) => Some(err.as_ref()),
             ServerError::ExpansionError(err) => Some(err),
             ServerError::CompactionError(err) => Some(err),
             _ => None,
@@ -101,164 +72,140 @@ impl<T: EntityStore> error::Error for ServerError<T> {
 /// This struct knows how to talk to the database, and has a list of routes.
 #[derive(Clone)]
 pub struct KroegService {
-    config: config::Config,
-    routes: Vec<Route<RetrievingEntityStore<CellarEntityStore>, CellarEntityStore>>,
+    data: Arc<(config::Config, Vec<router::Route>)>,
+}
+
+impl KroegService {
+    pub fn new(config: config::Config, routes: Vec<router::Route>) -> KroegService {
+        KroegService {
+            data: Arc::new((config, routes)),
+        }
+    }
 }
 
 /// Helper function, that allows the router to fall back to 404 easily.
-fn not_found<T: EntityStore, R: QueueStore>(
-    _: Context,
-    store: T,
-    queue: R,
-    _: Request<Body>,
-) -> Box<Future<Item = (T, R, Response<Body>), Error = (ServerError<T>, T)> + Send> {
-    let response = Response::builder()
+async fn not_found(
+    _context: &mut Context<'_, '_>,
+    _request: Request,
+) -> Result<Response, ServerError> {
+    Ok(http::Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::from("unhandled route"))
-        .unwrap();
-
-    Box::new(future::ok((store, queue, response)))
+        .body(Body::from("OwO I don't know what this is"))
+        .unwrap())
 }
 
-pub fn launch_delivery(config: config::Config) -> impl Future<Item = (), Error = ()> + Send {
-    stream::repeat(config)
-        .fold(0, |iteration, config| {
-            let db = config.database.clone();
-            CellarEntityStore::new(&config.database)
-                .and_then(move |store| CellarEntityStore::new(&db).map(move |s| (store, s)))
-                .map_err(|e| panic!(e))
-                .and_then(move |(store, queue)| {
-                    let context = Context {
-                        server_base: config.server.base_uri.to_owned(),
-                        instance_id: config.server.instance_id,
-                        user: authentication::anonymous(),
-                    };
+/// Launches a delivery task.
+pub async fn launch_delivery(config: config::Config) {
+    loop {
+        let db = &config.database;
+        let conn = CellarConnection::connect(&db.server, &db.database, &db.username, &db.password)
+            .await
+            .unwrap();
 
-                    delivery::loop_deliver(context, store, queue, iteration)
-                        .map(move |_| iteration + 1)
-                })
-        })
-        .map(|_| ())
-}
+        let mut entity_store = RetrievingEntityStore::new(
+            CellarEntityStore::new(&conn),
+            config.server.base_uri.to_owned(),
+        );
+        let mut queue_store = CellarEntityStore::new(&conn);
 
-impl Service for KroegService {
-    type ReqBody = Body;
-    type ResBody = Body;
+        let mut context = Context {
+            server_base: config.server.base_uri.to_owned(),
+            instance_id: config.server.instance_id,
+            user: authentication::anonymous(),
 
-    type Error = ServerError<RetrievingEntityStore<CellarEntityStore>>;
-    type Future = Box<Future<Item = Response<Body>, Error = Self::Error> + Send>;
+            entity_store: &mut entity_store,
+            queue_store: &mut queue_store,
+        };
 
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let base = self.config.server.base_uri.to_owned();
-        let config = self.config.clone();
-        let routes = self.routes.clone();
-        let db = self.config.database.clone();
-        // When an incoming request gets handled, the first thing needed is connections to the database.
-        // For legacy design reasons, for now, we'll open two connections. One for the quad store, one for the queue.
-        Box::new(
-            CellarEntityStore::new(&self.config.database)
-                .and_then(move |store| CellarEntityStore::new(&db).map(move |s| (store, s)))
-                .map_err(|e| {
-                    println!("{:?}", e);
-                    panic!(e)
-                }) //ServerError::HandlerError(e.into()))
-                .and_then(move |(store, queue)| {
-                    let store = RetrievingEntityStore::new(store, base);
-                    let (parts, body) = req.into_parts();
-                    user_from_request(config, parts, store)
-                        .then(move |result| match result {
-                            Ok((config, parts, store, user)) => {
-                                let request = Request::from_parts(parts, body);
-
-                                let context = Context {
-                                    server_base: config.server.base_uri.to_owned(),
-                                    instance_id: config.server.instance_id,
-                                    user: user,
-                                };
-
-                                let route = routes
-                                    .iter()
-                                    .rev()
-                                    .find(|f| f.can_handle(&request))
-                                    .map(|f| f.handler.clone())
-                                    .unwrap_or_else(|| Arc::new(Box::new(not_found)));
-
-                                route(context, store, queue, request)
-                            }
-
-                            Err((e, store)) => {
-                                Box::new(future::err((ServerError::StoreError(e), store)))
-                            }
-                        })
-                        // Handlers return a tuple (EntityStore, QueueStore, Response) but we need to return a Response<Body>.
-                        // so, we drop the EntityStore and QueueStore. (note to self: bring transactions back)
-                        .then(|result| {
-                            match result {
-                                Ok((.., response)) => Ok(response),
-                                Err((err, _)) => {
-                                    eprintln!("Error handling request: {}", err);
-
-                                    // If the Service returns an error, the connection with the client will just drop.
-                                    // This doesn't seem like the best way to go, so return a 500 instead.
-                                    Ok(Response::builder()
-                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                        .body(Body::from(format!("error: {}", err)))
-                                        .unwrap())
-                                }
-                            }
-                        })
-                }),
-        )
+        if let Err(e) = delivery::loop_deliver(&mut context).await {
+            println!(" - delivery thread failed: {:?}", e);
+        }
     }
 }
 
-pub struct KroegServiceBuilder {
-    pub config: config::Config,
-    pub routes: Vec<Route<RetrievingEntityStore<CellarEntityStore>, CellarEntityStore>>,
-}
+impl HttpService for KroegService {
+    type Connection = ();
+    type ConnectionFuture = Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>>;
+    type ResponseFuture = Pin<Box<dyn Future<Output = Result<Response, std::io::Error>> + Send>>;
 
-impl NewService for KroegServiceBuilder {
-    type ReqBody = Body;
-    type ResBody = Body;
-    type Error = ServerError<RetrievingEntityStore<CellarEntityStore>>;
-    type Service = KroegService;
-    type Future = future::FutureResult<KroegService, Self::Error>;
-    type InitError = Self::Error;
+    fn connect(&self) -> Self::ConnectionFuture {
+        Box::pin(async move { Ok(()) })
+    }
 
-    fn new_service(&self) -> Self::Future {
-        future::ok(KroegService {
-            config: self.config.clone(),
-            routes: self.routes.clone(),
+    fn respond(&self, _: &mut (), req: http_service::Request) -> Self::ResponseFuture {
+        let ptr = self.data.clone();
+
+        Box::pin(async move {
+            let (parts, body) = req.into_parts();
+
+            let db = &ptr.0.database;
+            let conn =
+                CellarConnection::connect(&db.server, &db.database, &db.username, &db.password)
+                    .await
+                    .unwrap();
+
+            let mut entity_store = RetrievingEntityStore::new(
+                CellarEntityStore::new(&conn),
+                ptr.0.server.base_uri.to_owned(),
+            );
+            let mut queue_store = CellarEntityStore::new(&conn);
+
+            let user = match authentication::user_from_request(&parts, &mut entity_store).await {
+                Ok(user) => user,
+                Err(e) => {
+                    println!(" - err setting up request: {:?}", e);
+
+                    return Ok(http::Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from(e.to_string()))
+                        .unwrap());
+                }
+            };
+
+            println!(" - {} {} ({:?})", parts.method, parts.uri, user.subject);
+
+            let mut context = Context {
+                server_base: ptr.0.server.base_uri.to_owned(),
+                instance_id: ptr.0.server.instance_id,
+                entity_store: &mut entity_store,
+                queue_store: &mut queue_store,
+                user,
+            };
+
+            let response = if let Some(route) = ptr.1.iter().rev().find(|f| f.can_handle(&parts)) {
+                route
+                    .handler
+                    .run(&mut context, Request::from_parts(parts, body))
+                    .await
+            } else {
+                not_found(&mut context, Request::from_parts(parts, body)).await
+            };
+
+            match response {
+                Ok(response) => {
+                    println!(" -   {}", response.status());
+
+                    Ok(response)
+                }
+
+                Err(ServerError::HandlerError(e)) => {
+                    println!(" -    handler err {:?}", e);
+
+                    Ok(http::Response::builder()
+                        .status(202)
+                        .body(Body::from(e.to_string()))
+                        .unwrap())
+                }
+
+                Err(e) => {
+                    println!(" [ ] misc err {:?}", e);
+
+                    Ok(http::Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from(e.to_string()))
+                        .unwrap())
+                }
+            }
         })
     }
-}
-
-pub fn compact_response<
-    T: EntityStore,
-    R: QueueStore,
-    F: Future<Item = (T, R, Response<Value>), Error = (ServerError<T>, T)> + Send + 'static,
-    S: 'static + Send + Sync + Fn(Context, T, R, Request<Body>) -> F,
->(
-    function: S,
-) -> router::RequestHandler<T, R> {
-    Box::new(move |context, store, queue, request| {
-        Box::new(
-            function(context.clone(), store, queue, request)
-                .and_then(move |(store, queue, response)| {
-                    let (parts, body) = response.into_parts();
-
-                    context::compact(&context, body).then(|val| match val {
-                        Ok(val) => Ok((store, queue, parts, val)),
-                        Err(e) => Err((ServerError::CompactionError(e), store)),
-                    })
-                })
-                .map(|(store, queue, parts, body)| {
-                    (
-                        store,
-                        queue,
-                        Response::from_parts(parts, Body::from(body.to_string())),
-                    )
-                }),
-        )
-    })
 }

@@ -1,87 +1,40 @@
-#![feature(generators, use_extern_macros)]
-
-extern crate base64;
-extern crate chashmap;
-extern crate dotenv;
-extern crate futures_await as futures;
-extern crate hyper;
-extern crate jsonld;
-extern crate kroeg_cellar;
-extern crate kroeg_tap_activitypub;
-extern crate openssl;
-extern crate toml;
-
-#[macro_use]
-extern crate kroeg_tap;
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate serde_json;
-
 #[path = "../config.rs"]
 mod config;
 
-use futures::prelude::{await, *};
 use jsonld::nodemap::{Pointer, Value};
-use kroeg_cellar::QuadClient;
-use kroeg_tap::{untangle, Context, EntityStore, MessageHandler, User};
+use kroeg_cellar::{CellarConnection, CellarEntityStore};
+use kroeg_tap::{
+    as2, kroeg, sec, untangle, Context, EntityStore, MessageHandler, StoreError, User,
+};
 use kroeg_tap_activitypub::handlers::CreateActorHandler;
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
-use serde_json::Value as JValue;
+use serde_json::{json, Value as JValue};
 use std::collections::HashMap;
 use std::env;
-use std::error::Error;
-use std::fs::File;
-use std::io::Read;
 
-fn read_config() -> config::Config {
-    let config_url = dotenv::var("CONFIG").unwrap_or("server.toml".to_owned());
-    let mut file = File::open(&config_url).expect("Server config file not found!");
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).expect("Failed to read file!");
+async fn create_auth(store: &mut dyn EntityStore, id: String) -> Result<(), StoreError> {
+    let person = store.get(id, false).await?.unwrap();
 
-    toml::from_slice(&buffer).expect("Invalid config file!")
-}
-
-#[async]
-fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), (T::Error, T)> {
-    let (person, store) = await!(store.get(id, false))?;
-    let person = person.unwrap();
-
-    let mut key = None;
-    for val in &person.main()[sec!(publicKey)] {
-        if let Pointer::Id(id) = val {
-            key = Some(id.to_owned());
-            break;
-        }
-    }
-
-    if key == None {
+    let keyid = if let [Pointer::Id(id)] = &person.main()[sec!(publicKey)] as &[_] {
+        id.to_owned()
+    } else {
         eprintln!("Cannot create authentication for user: no key");
         return Ok(());
-    }
-
-    let keyid = key.unwrap();
-    let (key, store) = await!(store.get(keyid.to_owned(), false))?;
-    let mut key = key.unwrap();
-    let private = &key.meta()[sec!(privateKeyPem)];
-    let key = if private.len() != 1 {
-        eprintln!("Cannot create authentication for user: no private key");
-        return Ok(());
-    } else {
-        if let Pointer::Value(Value {
-            value: JValue::String(strval),
-            ..
-        }) = private[0].clone()
-        {
-            PKey::from_rsa(Rsa::private_key_from_pem(strval.as_bytes()).unwrap()).unwrap()
-        } else {
-            eprintln!("Invalid value for privateKeyPem");
-            return Ok(());
-        }
     };
 
-    let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
+    let mut key = store.get(keyid.to_owned(), false).await?.unwrap();
+    let private = if let [Pointer::Value(Value {
+        value: JValue::String(strval),
+        ..
+    })] = &key.meta()[sec!(privateKeyPem)] as &[_]
+    {
+        PKey::from_rsa(Rsa::private_key_from_pem(strval.as_bytes())?)?
+    } else {
+        eprintln!("Cannot create authentication for user: no private key");
+        return Ok(());
+    };
+
+    let mut signer = Signer::new(MessageDigest::sha256(), &private).unwrap();
     let signed = format!(
         "{}.{}",
         base64::encode_config(
@@ -114,14 +67,12 @@ fn create_auth<T: EntityStore + 'static>(store: T, id: String) -> Result<(), (T:
     Ok(())
 }
 
-#[async]
-fn make_owned<T: EntityStore + 'static>(
+async fn make_owned(
     config: config::Config,
-    mut store: T,
+    store: &mut dyn EntityStore,
     id: String,
-) -> Result<(), (T::Error, T)> {
-    let (object, store) = await!(store.get(id, true))?;
-    let mut object = object.unwrap();
+) -> Result<(), StoreError> {
+    let mut object = store.get(id, true).await?.unwrap();
     object.meta().get_mut(kroeg!(instance)).clear();
 
     object
@@ -133,18 +84,18 @@ fn make_owned<T: EntityStore + 'static>(
             language: None,
         }));
 
-    let _ = await!(store.put(object.id().to_owned(), object))?;
+    store.put(object.id().to_owned(), &mut object).await?;
 
     Ok(())
 }
 
-#[async]
-fn create_user<T: EntityStore + 'static>(
-    mut store: T,
+async fn create_user(
+    store: &CellarConnection,
+    config: config::Config,
     id: String,
     name: String,
     username: String,
-) -> Result<(), (Box<Error + Send + Sync + 'static>, T)> {
+) -> Result<(), StoreError> {
     let user = json!(
         {
             "@id": id.to_owned(),
@@ -154,17 +105,20 @@ fn create_user<T: EntityStore + 'static>(
         }
     );
 
-    let mut untangled = untangle(user).unwrap();
-    for (key, value) in untangled {
+    let mut entity_store = CellarEntityStore::new(store);
+    let mut queue_store = CellarEntityStore::new(store);
+
+    let untangled = untangle(&user)?;
+    for (key, mut value) in untangled {
         println!("Storing {:?} {:?}", key, value);
-        let (_, _store) = await!(store.put(key, value)).map_err(|(e, store)| (e.into(), store))?;
-        store = _store;
+        entity_store.put(key, &mut value).await?;
     }
 
-    let config = read_config();
-    let context = Context {
+    let mut context = Context {
         server_base: config.server.base_uri,
         instance_id: config.server.instance_id,
+        entity_store: &mut entity_store,
+        queue_store: &mut queue_store,
 
         user: User {
             claims: HashMap::new(),
@@ -174,59 +128,67 @@ fn create_user<T: EntityStore + 'static>(
             token_identifier: "cli".to_string(),
         },
     };
-    let actor_handler = CreateActorHandler;
 
-    await!(actor_handler.handle(context, store, "".to_string(), id.to_owned()))?;
+    let actor_handler = CreateActorHandler;
+    actor_handler
+        .handle(&mut context, &mut "".to_string(), &mut id.to_owned())
+        .await?;
 
     Ok(())
 }
 
-fn main() {
+async fn do_code() -> Result<(), StoreError> {
     dotenv::dotenv().ok();
 
     let mut args: Vec<_> = env::args().collect();
 
-    let config = read_config();
-    let db = PgConnection::establish(&config.database)
-        .expect(&format!("Error connecting to {}", config.database));
-    let store = QuadClient::new(db);
+    let config = config::read_config();
+    let db = CellarConnection::connect(
+        &config.database.server,
+        &config.database.username,
+        &config.database.password,
+        &config.database.database,
+    )
+    .await?;
 
     if args.len() < 2 {
         eprintln!("Usage: {} [create / auth / own]", args[0]);
-        return;
+        return Ok(());
     }
 
-    let promise: Box<Future<Item = (), Error = ()> + Send> = match &args[1].to_string() as &str {
+    match &args[1].to_string() as &str {
         "create" => {
             if args.len() < 5 {
                 eprintln!("Usage: {} create id username \"name\"", args[0]);
-                return;
+                return Ok(());
             }
 
             let name = args.remove(4);
             let username = args.remove(3);
             let id = args.remove(2);
 
-            Box::new(
-                create_user(store, id, name, username).map_err(|(e, _)| eprintln!("Error: {}", e)),
-            )
+            create_user(&db, config, id, name, username).await?;
         }
 
         "auth" => {
             let id = args.remove(2);
-            Box::new(create_auth(store, id).map_err(|(e, _)| eprintln!("Error: {}", e)))
+            create_auth(&mut CellarEntityStore::new(&db), id).await?;
         }
 
         "own" => {
             let id = args.remove(2);
-            Box::new(make_owned(config, store, id).map_err(|(e, _)| eprintln!("Error: {}", e)))
+            make_owned(config, &mut CellarEntityStore::new(&db), id).await?;
         }
 
         val => {
             eprintln!("Unknown call {}", val);
-            return;
+            return Ok(());
         }
     };
 
-    hyper::rt::run(promise);
+    Ok(())
+}
+
+fn main() {
+    async_std::task::block_on(do_code()).unwrap();
 }

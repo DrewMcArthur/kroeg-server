@@ -1,97 +1,83 @@
-use base64;
-use futures::prelude::{await, *};
+use futures::future::FutureExt;
+use futures_timer::{Delay, TryFutureExt};
+use http_service::Body;
+use jsonld::nodemap::{Pointer, Value};
+use jsonld::{compact, error::CompactionError, JsonLdOptions};
 use kroeg_tap::{
-    assemble, Context, DefaultAuthorizer, EntityStore, LocalOnlyAuthorizer, QueueItem, QueueStore,
+    as2, assemble, kroeg, sec, Context, DefaultAuthorizer, LocalOnlyAuthorizer, QueueItem,
 };
+use kroeg_tap::{StoreError, StoreItem};
+use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
+use serde_json::{json, Value as JValue};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
-use tokio::prelude::*;
-use tokio::timer::Delay;
+use std::fmt::Debug;
+use std::time::Duration;
 
-use context;
-use hyper::client::HttpConnector;
-use hyper::{header::HeaderValue, Body, Client, Method, Request};
-use hyper_tls::HttpsConnector;
-use jsonld::nodemap::Pointer;
-use jsonld::{compact, error::CompactionError, JsonLdOptions};
-use kroeg_tap::StoreItem;
-use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
-use post::post;
-use serde_json::Value as JValue;
+use crate::context;
+use crate::post;
+use crate::router::RequestHandler;
+use crate::ServerError;
 
 pub fn escape(s: &str) -> String {
     s.replace("\\", "\\\\").replace(" ", "\\s")
 }
 
-#[async]
-pub fn compact_with_context(
-    context: Context,
-    val: JValue,
-) -> Result<(Context, JValue), CompactionError<context::HyperContextLoader>> {
-    let val = await!(compact::<context::HyperContextLoader>(
+pub async fn compact_with_context(
+    context: &mut Context<'_, '_>,
+    val: &JValue,
+) -> Result<JValue, CompactionError<context::SurfContextLoader>> {
+    compact::<context::SurfContextLoader>(
         val,
-        context::outgoing_context(&context),
-        JsonLdOptions {
+        &context::outgoing_context(context),
+        &JsonLdOptions {
             base: None,
             compact_arrays: Some(true),
             expand_context: None,
             processing_mode: None,
-        }
-    ))?;
-
-    Ok((context, val))
+        },
+    )
+    .await
 }
 
-pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Body>) {
+pub fn create_signature<C: surf::middleware::HttpClient + Debug + Unpin + Send + Sync>(
+    data: &str,
+    key_object: &StoreItem,
+    req: surf::Request<C>,
+) -> Result<surf::Request<C>, Box<dyn std::error::Error + Send + Sync>> {
     let digest = Sha256::digest_str(data);
     let digest = base64::encode_config(&digest, base64::STANDARD);
 
-    req.headers_mut()
-        .insert("Digest", format!("SHA-256={}", digest).parse().unwrap());
+    let mut req = req.set_header("digest", format!("SHA-256={}", digest));
 
-    let pem_data = key_object.sub(kroeg!(meta)).unwrap()[sec!(privateKeyPem)]
-        .iter()
-        .next()
-        .and_then(|f| match f {
-            Pointer::Value(val) => {
-                if let JValue::String(strval) = &val.value {
-                    Some(strval.to_owned())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-        .and_then(|f| Rsa::private_key_from_pem(f.as_bytes()).ok())
-        .unwrap();
-    let key = PKey::from_rsa(pem_data).unwrap();
-    let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
+    let private_key = if let [Pointer::Value(Value {
+        value: JValue::String(strval),
+        ..
+    })] = &key_object.sub(kroeg!(meta)).unwrap()[sec!(privateKeyPem)] as &[_]
+    {
+        PKey::from_rsa(Rsa::private_key_from_pem(strval.as_bytes())?)?
+    } else {
+        return Ok(req);
+    };
+
+    let mut signer = Signer::new(MessageDigest::sha256(), &private_key)?;
 
     let mut signed = String::new();
-    let headers = &["(request-target)", "digest"];
+    let headers = &["(request-target)", "host", "digest"];
     for val in headers {
         let value = match *val {
             "(request-target)" => format!(
                 "(request-target): {} {}{}",
                 req.method().as_str().to_lowercase(),
-                req.uri().path(),
-                match req.uri().query() {
+                req.url().path(),
+                match req.url().query() {
                     None => format!(""),
                     Some(val) => format!("?{}", val),
                 }
             ),
 
-            val => format!(
-                "{}: {}",
-                val,
-                req.headers()
-                    .get_all(val)
-                    .iter()
-                    .map(|f| f.to_str().unwrap())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            "host" => format!("{}: {}", val, req.url().host().unwrap()),
+            val => format!("{}: {}", val, req.headers().get(val).unwrap_or("")),
         };
 
         if signed.len() > 0 {
@@ -101,232 +87,211 @@ pub fn create_signature(data: &str, key_object: &StoreItem, req: &mut Request<Bo
         signed += &value;
     }
 
-    signer.update(signed.as_bytes()).unwrap();
-    let signature = base64::encode_config(&signer.sign_to_vec().unwrap(), base64::STANDARD);
+    signer.update(signed.as_bytes())?;
+    let signature = base64::encode_config(&signer.sign_to_vec()?, base64::STANDARD);
 
-    req.headers_mut().insert(
+    Ok(req.set_header(
         "Signature",
         format!(
             "keyId=\"{}\",algorithm=\"rsa-sha256\",headers=\"{}\",signature=\"{}\"",
             key_object.id(),
             headers.join(" "),
             signature
-        )
-        .parse()
-        .unwrap(),
-    );
+        ),
+    ))
 }
 
-#[async]
-pub fn deliver_one<T: EntityStore, R: QueueStore>(
-    mut context: Context,
-    client: Client<HttpsConnector<HttpConnector>, Body>,
-    store: T,
-    queue: R,
-    item: R::Item,
-) -> Result<
-    (
-        Context,
-        Client<HttpsConnector<HttpConnector>, Body>,
-        T,
-        R,
-        R::Item,
-    ),
-    (
-        Context,
-        Client<HttpsConnector<HttpConnector>, Body>,
-        T,
-        R,
-        R::Item,
-        T::Error,
-    ),
-> {
-    match item.event() {
+pub async fn deliver_one(
+    context: &mut Context<'_, '_>,
+    item: &QueueItem,
+) -> Result<(), ServerError> {
+    match &item.event as &str {
         "deliver" => {
-            println!(" [+] delivering {:?}", item.data());
             // bad. urlencode instead.
             let mut data: Vec<_> = item
-                .data()
+                .data
                 .split(' ')
                 .map(|f| f.replace("\\s", " ").replace("\\\\", "\\"))
                 .collect();
-            let uri = data.remove(1);
+            let inbox = data.remove(1);
             let itemid = data.remove(0);
 
-            let (sdata, store) = match await!(store.get(itemid, false)) {
-                Ok((Some(ok), store)) => (ok, store),
-                Ok((None, store)) => return Ok((context, client, store, queue, item)),
-                Err((err, store)) => return Err((context, client, store, queue, item, err)),
+            println!(" + preparing to deliver {:?} to {:?}", itemid, inbox);
+
+            let item = match context
+                .entity_store
+                .get(itemid, false)
+                .await
+                .map_err(ServerError::StoreError)?
+            {
+                Some(sdata) => sdata,
+                None => return Ok(()),
             };
 
-            if let Pointer::Id(id) = sdata.main()[as2!(actor)][0].to_owned() {
-                context.user.subject = id;
+            if let [Pointer::Id(id)] = &item.main()[as2!(actor)] as &[_] {
+                context.user.subject = id.to_owned();
+            } else {
+                return Ok(());
             }
 
-            let (is_local, store) = match await!(store.get(uri.to_owned(), true)) {
-                Ok((Some(val), store)) => (val.is_owned(&context), store),
-                Ok((None, store)) => (false, store),
-                Err((err, store)) => return Err((context, client, store, queue, item, err)),
+            let is_local = match context
+                .entity_store
+                .get(inbox.to_owned(), true)
+                .await
+                .map_err(ServerError::StoreError)?
+            {
+                Some(val) => val.is_owned(&context),
+                None => false,
             };
 
-            let (store, context, data) = if is_local {
-                (
-                    store,
-                    context,
-                    json!({ "@id": sdata.id(), "@type": [kroeg!(DeliveryObject)] }),
-                )
+            let object = if is_local {
+                json!({ "@id": item.id(), "@type": [kroeg!(DeliveryObject)] })
             } else {
-                let (_, store, _, data) = await!(assemble(
-                    sdata.clone(),
+                let assembled = assemble(
+                    &item,
                     0,
-                    Some(store),
-                    LocalOnlyAuthorizer::new(&context, DefaultAuthorizer::new(&context)),
-                    HashSet::new()
-                ))
-                .unwrap();
+                    context,
+                    &LocalOnlyAuthorizer::new(DefaultAuthorizer),
+                    &mut HashSet::new(),
+                )
+                .await
+                .map_err(ServerError::HandlerError)?;
 
-                let (context, data) = await!(compact_with_context(context, data)).unwrap();
-
-                (store.unwrap(), context, data)
+                compact_with_context(context, &assembled)
+                    .await
+                    .map_err(ServerError::CompactionError)?
             };
 
-            let (headers, store, queue) = {
-                let mut req = Request::new(Body::from(data.to_string()));
-                *req.method_mut() = Method::POST;
-                *req.uri_mut() = uri.parse().unwrap();
-                req.headers_mut().insert(
-                    "Content-Type",
-                    HeaderValue::from_str(
-                        "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
-                    )
-                    .unwrap(),
-                );
+            let actor = context.user.subject.clone();
 
-                let actor = match sdata.main()[as2!(actor)].get(0).cloned() {
-                    Some(Pointer::Id(id)) => id.to_owned(),
-                    _ => unimplemented!(),
+            if is_local {
+                let handler = post::PostHandler;
+                let req = http::Request::builder()
+                    .uri(&inbox)
+                    .method("POST")
+                    .body(Body::from(object.to_string()))
+                    .unwrap();
+                let response = handler.run(context, req).await?;
+
+                println!(
+                    " + deliver {} to {}: {}",
+                    item.id(),
+                    inbox,
+                    response.status()
+                );
+            } else {
+                let mut request = surf::post(&inbox);
+
+                let owner = match context
+                    .entity_store
+                    .get(actor, false)
+                    .await
+                    .map_err(ServerError::StoreError)?
+                {
+                    Some(owner) => owner,
+                    None => return Ok(()),
                 };
 
-                if !is_local {
-                    let (owner, store) = match await!(store.get(actor, false)) {
-                        Ok((Some(val), store)) => (val, store),
-                        _ => panic!("todo"),
-                    };
+                let blob = object.to_string();
 
-                    let (key_object, store) =
-                        if let Pointer::Id(id) = owner.main()[sec!(publicKey)][0].to_owned() {
-                            match await!(store.get(id, false)) {
-                                Ok((Some(val), store)) => (val, store),
-                                _ => panic!("todo"),
-                            }
-                        } else {
-                            panic!("todo")
-                        };
-
-                    create_signature(&data.to_string(), &key_object, &mut req);
-
-                    let response =
-                        match await!(client.request(req).timeout(Duration::from_millis(10000))) {
-                            Ok(val) => val,
-                            Err(err) => {
-                                println!("ERR {:?}", err);
-                                return Ok((context, client, store, queue, item));
-                            }
-                        };
-
-                    let (header, _) = response.into_parts();
-
-                    (header, store, queue)
-                } else {
-                    let mut new_context = context.clone();
-                    new_context.user.subject = actor;
-
-                    let (s, q, res) = match await!(post(new_context, store, queue, req)) {
-                        Ok(val) => val,
-                        Err((e, _)) => panic!("cannot recover. oops. {}", e),
-                    };
-
-                    let (header, _) = res.into_parts();
-
-                    (header, s, q)
+                if let [Pointer::Id(key_id)] = &owner.main()[sec!(publicKey)] as &[_] {
+                    if let Some(key) = context
+                        .entity_store
+                        .get(key_id.to_owned(), true)
+                        .await
+                        .map_err(ServerError::StoreError)?
+                    {
+                        request = create_signature(&blob, &key, request)
+                            .map_err(ServerError::HandlerError)?;
+                    }
                 }
-            };
 
-            println!(" [+] {} {}", uri, headers.status);
+                let response = request
+                    .body_string(blob)
+                    .set_header(
+                        "Content-Type",
+                        "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+                    )
+                    .timeout(Duration::from_secs(7))
+                    .await
+                    .map_err(ServerError::HttpError)?;
 
-            Ok((context, client, store, queue, item))
+                println!(
+                    " + deliver {} to {}: {}",
+                    item.id(),
+                    inbox,
+                    response.status()
+                );
+            }
+
+            Ok(())
         }
 
-        _ => {
-            panic!("oh no");
-        }
+        _ => Err(ServerError::HandlerError("no idea how to handle".into())),
     }
 }
 
-#[async]
-pub fn register_delivery<R: QueueStore>(
-    queue: R,
+pub async fn register_delivery(
+    context: &mut Context<'_, '_>,
     item: String,
     towards: String,
-) -> Result<R, (R::Error, R)> {
-    await!(queue.add(
-        "deliver".to_owned(),
-        format!("{} {}", escape(&item), escape(&towards))
-    ))
+) -> Result<(), StoreError> {
+    context
+        .queue_store
+        .add(
+            "deliver".to_owned(),
+            format!("{} {}", escape(&item), escape(&towards)),
+        )
+        .await
 }
 
 use std::panic::AssertUnwindSafe;
 
-#[async]
-pub fn loop_deliver<T: EntityStore, R: QueueStore>(
-    mut context: Context,
-    mut store: T,
-    mut queue: R,
-    iteration: usize,
-) -> Result<(), ()> {
-    println!("[+] Delivery thread start (iteration {})", iteration);
-    let connector = HttpsConnector::new(1).unwrap();
-    let mut client = Client::builder().build::<_, Body>(connector);
-
+pub async fn loop_deliver(context: &mut Context<'_, '_>) -> Result<(), ServerError> {
+    println!("+ Delivery thread start");
     loop {
-        let (item, _queue) = await!(queue.get_item()).unwrap();
-        queue = _queue;
+        let item = context
+            .queue_store
+            .get_item()
+            .await
+            .map_err(ServerError::StoreError)?;
         match item {
             Some(val) => {
-                // (no it's not unwind safe. well, i assume not.)
-                match await!(AssertUnwindSafe(deliver_one::<T, R>(
-                    context, client, store, queue, val
-                ))
-                .catch_unwind()
-                .map_err(|_| ()))
-                {
-                    Ok(Ok((co, cl, s, q, item))) => {
-                        context = co;
-                        client = cl;
-                        store = s;
-                        queue = await!(q.mark_success(item)).unwrap();
-                    }
-                    Ok(Err((co, _cl, s, q, item, _))) => {
-                        context = co;
-                        // client = cl;
-                        store = s;
-                        queue = await!(q.mark_failure(item)).unwrap();
+                let delivery = AssertUnwindSafe(deliver_one(context, &val))
+                    .catch_unwind()
+                    .await;
 
-                        return Err(());
+                match delivery {
+                    Ok(Ok(())) => {
+                        context
+                            .queue_store
+                            .mark_success(val)
+                            .await
+                            .map_err(ServerError::StoreError)?;
                     }
 
-                    Err(_) => {
-                        println!("[!!] panic handling delivery. Will try to recover, but this item has been lost to the ages.");
-                        // ok, we're in trouble, we just paniced.
-
-                        // uhm. let's escape and hope the other threads do better.
-                        break Ok(());
+                    Ok(Err(e)) => {
+                        println!("+ queue handling fail: {}", e);
+                        context
+                            .queue_store
+                            .mark_failure(val)
+                            .await
+                            .map_err(ServerError::StoreError)?;
                     }
-                };
+
+                    Err(e) => {
+                        println!("+ queue handling fail: {:?} (panic)", e);
+                        context
+                            .queue_store
+                            .mark_failure(val)
+                            .await
+                            .map_err(ServerError::StoreError)?;
+                    }
+                }
             }
 
             None => {
-                await!(Delay::new(Instant::now() + Duration::from_millis(10000))).unwrap();
+                Delay::new(Duration::from_secs(10)).await.unwrap();
             }
         };
     }

@@ -1,14 +1,23 @@
 use dotenv;
+use serde::Deserialize;
 use std::{fs::File, io::Read};
 use toml;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
-    pub database: String,
+    pub database: DatabaseConfig,
 
     pub listen: Option<String>,
     pub deliver: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DatabaseConfig {
+    pub server: String,
+    pub username: String,
+    pub password: String,
+    pub database: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

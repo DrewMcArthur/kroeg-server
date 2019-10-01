@@ -1,19 +1,13 @@
-//! Simple, insecure, authentication method to mock the server for now.
-
-use super::config;
-use jsonld::nodemap::Pointer;
-use kroeg_tap::{EntityStore, User};
-
 use base64::decode;
+use http::request::Parts;
+use jsonld::nodemap::{Pointer, Value};
+use kroeg_tap::{sec, EntityStore, StoreError, User};
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Verifier};
 use serde_json::Value as JValue;
-
-use futures::prelude::{await, *};
 use std::collections::HashMap;
-
-use http::request::Parts;
-use jwt::verify;
 use std::io::Write;
+
+use crate::jwt::verify;
 
 pub fn build_header_magic(parts: &Parts, sig: Vec<String>) -> Vec<u8> {
     let mut result = Vec::new();
@@ -54,11 +48,10 @@ pub fn build_header_magic(parts: &Parts, sig: Vec<String>) -> Vec<u8> {
     result
 }
 
-#[async]
-pub fn verify_http_signature<R: EntityStore>(
-    req: Parts,
-    mut store: R,
-) -> Result<(Parts, R, Option<User>), (R::Error, R)> {
+pub async fn verify_http_signature(
+    req: &Parts,
+    store: &mut dyn EntityStore,
+) -> Result<Option<User>, StoreError> {
     if let Some(val) = req
         .headers
         .get("Signature")
@@ -80,70 +73,56 @@ pub fn verify_http_signature<R: EntityStore>(
             map.get("signature").cloned(),
         ) {
             (Some(key_id), Some(algorithm), Some(headers), Some(signature)) => {
-                let mut key_id = key_id.to_owned();
+                let mut key_id_data = key_id.to_owned();
                 if key_id.starts_with("acct:") {
                     // XXX Mastodon hack, clean this code up later
                     let spl = key_id.split(':').collect::<Vec<_>>()[1]
                         .split('@')
                         .map(String::from)
                         .collect::<Vec<_>>();
-                    key_id = format!("https://{}/users/{}#public-key", spl[1], spl[0]);
+                    key_id_data = format!("https://{}/users/{}#public-key", spl[1], spl[0]);
                 }
-                let (key_data, _store) = await!(store.get(key_id.to_owned(), false))?;
-                store = _store;
-                if let Some(key_data) = key_data {
-                    let pem_data = key_data.main()[sec!(publicKeyPem)]
-                        .iter()
-                        .next()
-                        .and_then(|f| match f {
-                            Pointer::Value(val) => {
-                                if let JValue::String(strval) = &val.value {
-                                    Some(strval.to_owned())
-                                } else {
-                                    None
-                                }
+                let key_data = match store.get(key_id_data, false).await? {
+                    Some(key_data) => key_data,
+                    None => return Ok(None),
+                };
+
+                if let [Pointer::Value(Value {
+                    value: JValue::String(key_pem),
+                    ..
+                })] = &key_data.main()[sec!(publicKeyPem)] as &[Pointer]
+                {
+                    let key = Rsa::public_key_from_pem(key_pem.as_bytes())?;
+                    let key = PKey::from_rsa(key)?;
+                    let signature = decode(signature.as_bytes()).unwrap(); // i know, bad
+                    let owner =
+                        if let [Pointer::Id(id)] = &key_data.main()[sec!(owner)] as &[Pointer] {
+                            id.to_owned()
+                        } else {
+                            return Ok(None);
+                        };
+
+                    match &*algorithm as &str {
+                        "rsa-sha256" => {
+                            let mut verifier = Verifier::new(MessageDigest::sha256(), &key)?;
+                            let header_magic = build_header_magic(
+                                &req,
+                                headers.split(' ').map(str::to_string).collect(),
+                            );
+
+                            verifier.update(&header_magic).unwrap();
+                            let result = verifier.verify(&signature)?;
+                            if result {
+                                return Ok(Some(User {
+                                    claims: HashMap::new(),
+                                    issuer: Some(key_id.to_owned()),
+                                    subject: owner,
+                                    audience: vec![],
+                                    token_identifier: "http-signature".to_owned(),
+                                }));
                             }
-
-                            _ => None,
-                        })
-                        .and_then(|f| Rsa::public_key_from_pem(f.as_bytes()).ok());
-
-                    if let Some(key) = pem_data {
-                        let key = PKey::from_rsa(key).unwrap();
-                        let signature = decode(signature.as_bytes()).unwrap(); // i know, bad
-                        let owner = match key_data.main()[sec!(owner)].iter().next() {
-                            Some(Pointer::Id(id)) => Some(id.to_owned()),
-                            _ => None,
                         }
-                        .unwrap();
-
-                        match &*algorithm as &str {
-                            "rsa-sha256" => {
-                                let mut verifier =
-                                    Verifier::new(MessageDigest::sha256(), &key).unwrap();
-                                let header_magic = build_header_magic(
-                                    &req,
-                                    headers.split(' ').map(str::to_string).collect(),
-                                );
-                                verifier.update(&header_magic).unwrap();
-                                let result = verifier.verify(&signature).unwrap();
-                                if result {
-                                    return Ok((
-                                        req,
-                                        store,
-                                        Some(User {
-                                            claims: HashMap::new(),
-                                            issuer: Some(key_id.to_owned()),
-                                            subject: owner,
-                                            audience: vec![],
-                                            token_identifier: "http-signature".to_owned(),
-                                        }),
-                                    ));
-                                }
-                            }
-
-                            _ => { /* */ }
-                        }
+                        _ => { /* */ }
                     }
                 }
             }
@@ -152,7 +131,7 @@ pub fn verify_http_signature<R: EntityStore>(
         };
     }
 
-    Ok((req, store, None))
+    Ok(None)
 }
 
 pub fn anonymous() -> User {
@@ -165,34 +144,26 @@ pub fn anonymous() -> User {
     }
 }
 
-#[async]
-pub fn user_from_request<R: EntityStore>(
-    config: config::Config,
-    req: Parts,
-    mut store: R,
-) -> Result<(config::Config, Parts, R, User), (R::Error, R)> {
+pub async fn user_from_request(
+    req: &Parts,
+    store: &mut dyn EntityStore,
+) -> Result<User, StoreError> {
     if let Some(val) = req
         .headers
         .get("Authorization")
-        .and_then(|f| f.to_str().ok().map(str::to_string))
+        .and_then(|f| f.to_str().ok())
     {
-        let bearer: Vec<_> = val.split(' ').map(str::to_string).collect();
+        let bearer: Vec<_> = val.split(' ').collect();
         if bearer[0] == "Bearer" && bearer.len() == 2 {
-            let (nstore, user) = await!(verify(store, bearer[1].to_owned()))?;
-            store = nstore;
+            let user = verify(store, bearer[1].to_owned()).await?;
             if let Some(user) = user {
-                return Ok((config, req, store, user));
+                return Ok(user);
             }
         }
     }
 
-    await!(verify_http_signature(req, store).map(|(req, store, data)| (
-        req,
-        store,
-        match data {
-            Some(data) => data,
-            None => anonymous(),
-        },
-    )))
-    .map(move |(req, store, user)| (config, req, store, user))
+    match verify_http_signature(req, store).await? {
+        Some(data) => Ok(data),
+        None => Ok(anonymous()),
+    }
 }

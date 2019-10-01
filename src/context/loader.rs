@@ -1,43 +1,50 @@
-use futures::future;
-use futures::prelude::*;
-
 use chashmap::CHashMap;
-use hyper::Error;
-
 use jsonld::RemoteContextLoader;
-use serde_json::{from_slice, Value};
+use serde_json::Value;
+use std::error::Error;
+use std::fmt::{self, Display};
+use std::future::Future;
+use std::pin::Pin;
 
-lazy_static! {
+use crate::request::do_request;
+
+lazy_static::lazy_static! {
     /// List of contexts that have already been read.
     static ref CONTEXT_MAP: CHashMap<String, Value> = CHashMap::new();
 }
 
-use super::super::request::HyperLDRequest;
+#[derive(Debug)]
+pub struct SurfContextLoader;
 
 #[derive(Debug)]
-pub struct HyperContextLoader;
+pub struct ContextLoadError(Box<dyn Error + Send + Sync + 'static>);
+impl Error for ContextLoadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.0.source()
+    }
+}
 
-impl RemoteContextLoader for HyperContextLoader {
-    type Error = Error;
-    type Future = Box<Future<Item = Value, Error = Error> + Send>;
+impl Display for ContextLoadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl RemoteContextLoader for SurfContextLoader {
+    type Error = ContextLoadError;
+    type Future = Pin<Box<dyn Future<Output = Result<Value, Self::Error>> + Send + 'static>>;
 
     fn load_context(url: String) -> Self::Future {
-        if let Some(val) = CONTEXT_MAP.get(&url) {
-            return Box::new(future::ok(val.clone()));
-        }
+        Box::pin(async move {
+            if let Some(val) = CONTEXT_MAP.get(&url) {
+                return Ok(val.clone());
+            }
 
-        let future = HyperLDRequest::new(&url);
+            let response: Value = do_request(&url).await.map_err(ContextLoadError)?;
+            eprintln!(" [ ] Loaded context at: {}", url);
+            CONTEXT_MAP.insert(url, response.clone());
 
-        Box::new(
-            future
-                .and_then(|res| res.unwrap().into_body().concat2())
-                .map(move |val| {
-                    let res: Value =
-                        from_slice(val.as_ref()).expect("Failed to parse context as JSON");
-                    eprintln!(" [ ] Loaded context at: {}", url);
-                    CONTEXT_MAP.insert(url, res.to_owned());
-                    res
-                }),
-        )
+            Ok(response)
+        })
     }
 }

@@ -1,5 +1,3 @@
-use futures::prelude::*;
-
 use jsonld::{compact as jsonld_compact, error::CompactionError, JsonLdOptions};
 use kroeg_tap::Context;
 use serde_json::{from_slice, Value};
@@ -44,25 +42,26 @@ pub fn apply_supplement(val: Value) -> Value {
 }
 
 /// Returns the outgoing context as used in @context, for all outgoing documents.
-pub fn outgoing_context(context: &Context) -> Value {
+pub fn outgoing_context(context: &mut Context) -> Value {
     Value::Array(vec![
         Value::String("https://www.w3.org/ns/activitystreams".to_owned()),
         Value::String(format!("{}/-/context", context.server_base)),
     ])
 }
 
-pub fn compact(
-    context: &Context,
-    value: Value,
-) -> impl Future<Item = Value, Error = CompactionError<HyperContextLoader>> + Send {
-    jsonld_compact::<HyperContextLoader>(
+pub async fn compact(
+    context: &mut Context<'_, '_>,
+    value: &Value,
+) -> Result<Value, CompactionError<SurfContextLoader>> {
+    jsonld_compact::<SurfContextLoader>(
         value,
-        outgoing_context(context),
-        JsonLdOptions {
+        &outgoing_context(context),
+        &JsonLdOptions {
             base: None,
             compact_arrays: Some(true),
             expand_context: None,
             processing_mode: None,
         },
     )
+    .await
 }

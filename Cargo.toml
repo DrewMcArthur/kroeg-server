@@ -2,29 +2,36 @@
 name = "kroeg-server"
 version = "0.1.0"
 authors = ["Puck Meerburg <puck@puckipedia.com>"]
+edition = "2018"
 
 [[bin]]
 name = "kroeg-call"
 path = "src/bin/kroeg-call.rs"
 
 [dependencies]
-serde = "1.0"
-serde_derive = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+futures-preview = "0.3.0-alpha.18"
+futures-timer = "0.3.0"
+http-service = "0.3.1"
+
+
 jsonld = { path = "../jsonld-rs" }
 kroeg-cellar = { path = "../cellar" }
 kroeg-tap = { path = "../tap/tap" }
 kroeg-tap-activitypub = { path = "../tap/activitypub" }
-hyper = "0.12"
-futures-await = "0.1"
-diesel = { version = "~1.2", features = ["postgres"] }
-dotenv = "0.9.0"
+
+async-std = "0.99"
+async-trait = "0.1"
+
+surf = "1.0"
+url = "2.1"
 toml = "0.4"
-hyper-tls = "0.2"
+dotenv = "0.9.0"
 chashmap = "2.2.0"
 lazy_static = "1.0"
-http = "0.1.7"
+http = "0.1.18"
 openssl = "0.10"
 base64 = "0.9"
-tokio = "0.1"
 sha2 = "0.7"
