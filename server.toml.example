@@ -1,12 +1,16 @@
-# Any server needs to have a database defined:
-database = "postgres://localhost/kroegrs"
-
 # If you want this process to listen for HTTP requests, set listen to the location you want it to listen at.
 listen = "127.0.0.1:3000"
 
 # Do you want this process to deliver statuses and handle other background tasks? Set this value to the amount
 # of simultaneous tasks to handle.
 deliver = 1
+
+# The PostgreSQL database to connect to.
+[database]
+server = "127.0.0.1:5432"
+username = "postgres"
+password = "postgres"
+database = "postgres"
 
 # This part describes information about the server itself.
 [server]
