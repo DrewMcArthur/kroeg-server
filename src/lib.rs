@@ -83,17 +83,6 @@ impl KroegService {
     }
 }
 
-/// Helper function, that allows the router to fall back to 404 easily.
-async fn not_found(
-    _context: &mut Context<'_, '_>,
-    _request: Request,
-) -> Result<Response, ServerError> {
-    Ok(http::Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::from("OwO I don't know what this is"))
-        .unwrap())
-}
-
 /// Launches a delivery task.
 pub async fn launch_delivery(config: config::Config) {
     loop {
@@ -178,18 +167,18 @@ impl HttpService for KroegService {
                     .run(&mut context, Request::from_parts(parts, body))
                     .await
             } else {
-                not_found(&mut context, Request::from_parts(parts, body)).await
+                router::not_found(&mut context, Request::from_parts(parts, body)).await
             };
 
             match response {
                 Ok(response) => {
-                    println!(" -   {}", response.status());
+                    println!("     {}", response.status());
 
                     Ok(response)
                 }
 
                 Err(ServerError::HandlerError(e)) => {
-                    println!(" -    handler err {:?}", e);
+                    println!("      handler err {:?}", e);
 
                     Ok(http::Response::builder()
                         .status(202)
@@ -198,7 +187,7 @@ impl HttpService for KroegService {
                 }
 
                 Err(e) => {
-                    println!(" [ ] misc err {:?}", e);
+                    println!("      misc err {:?}", e);
 
                     Ok(http::Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)

@@ -138,7 +138,7 @@ pub fn anonymous() -> User {
     User {
         claims: HashMap::new(),
         issuer: None,
-        subject: "https://example.com/~user".to_owned(),
+        subject: "anonymous".to_owned(),
         audience: vec![],
         token_identifier: "anon".to_owned(),
     }

@@ -74,8 +74,8 @@ impl crate::router::RequestHandler for GetHandler {
         context: &mut Context<'_, '_>,
         request: Request,
     ) -> Result<Response, ServerError> {
-        let mut id = format!("{}{}", context.server_base, request.uri().path());
-        let mut query = request.uri().query().map(str::to_string);
+        let id = format!("{}{}", context.server_base, request.uri().path());
+        let query = request.uri().query().map(str::to_string);
 
         let mut item = match context
             .entity_store

@@ -1,5 +1,5 @@
-use http::{request::Parts, Method};
-use http_service::{Request, Response};
+use http::{request::Parts, Method, StatusCode};
+use http_service::{Body, Request, Response};
 use kroeg_tap::Context;
 
 use crate::ServerError;
@@ -85,4 +85,15 @@ impl Route {
             uri.path() == &self.path
         }
     }
+}
+
+/// Helper function, that allows the router to fall back to 404 easily.
+pub async fn not_found(
+    _context: &mut Context<'_, '_>,
+    _request: Request,
+) -> Result<Response, ServerError> {
+    Ok(http::Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("OwO I don't know what this is"))
+        .unwrap())
 }
