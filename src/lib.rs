@@ -4,6 +4,7 @@ pub mod context;
 pub mod delivery;
 pub mod get;
 pub mod jwt;
+pub mod nodeinfo;
 pub mod post;
 pub mod request;
 pub mod router;
