@@ -116,6 +116,8 @@ async fn create_user(
 
     let mut context = Context {
         server_base: config.server.base_uri,
+        name: config.server.name,
+        description: config.server.description,
         instance_id: config.server.instance_id,
         entity_store: &mut entity_store,
         queue_store: &mut queue_store,

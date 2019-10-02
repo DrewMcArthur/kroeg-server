@@ -20,6 +20,12 @@ database = "postgres"
 #  on yourself.
 base_uri = "http://127.0.0.1:3000"
 
+# The name that this server should show up as.
+name = "Test instance"
+
+# The description that this server shows up as.
+description = "A test instance running Kroeg"
+
 # If you want to host more than one Kroeg instance per database, ensure these values do not conflict.
 # The instance ID is used internally to keep track of who owns which object. There is no logical difference between
 #  running two Kroeg instances on a separate database, and hosting them on one database with separate instance ID,

@@ -99,6 +99,8 @@ pub async fn launch_delivery(config: config::Config) {
 
         let mut context = Context {
             server_base: config.server.base_uri.to_owned(),
+            name: config.server.name.to_owned(),
+            description: config.server.description.to_owned(),
             instance_id: config.server.instance_id,
             user: authentication::anonymous(),
 
@@ -155,6 +157,8 @@ impl HttpService for KroegService {
 
             let mut context = Context {
                 server_base: ptr.0.server.base_uri.to_owned(),
+                name: ptr.0.server.name.to_owned(),
+                description: ptr.0.server.description.to_owned(),
                 instance_id: ptr.0.server.instance_id,
                 entity_store: &mut entity_store,
                 queue_store: &mut queue_store,
