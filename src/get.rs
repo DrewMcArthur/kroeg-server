@@ -113,7 +113,9 @@ impl crate::router::RequestHandler for GetHandler {
             .await
             .map_err(ServerError::StoreError)?;
 
-        let compacted = crate::context::compact(context, &assembled).await.unwrap();
+        let compacted = crate::context::compact(&context.server_base, &assembled)
+            .await
+            .unwrap();
 
         Ok(http::Response::builder()
             .header("Vary", "Accept")

@@ -29,7 +29,7 @@ pub async fn compact_with_context(
 ) -> Result<JValue, CompactionError<context::SurfContextLoader>> {
     compact::<context::SurfContextLoader>(
         val,
-        &context::outgoing_context(context),
+        &context::outgoing_context(&context.server_base),
         &JsonLdOptions {
             base: None,
             compact_arrays: Some(true),

@@ -1,4 +1,3 @@
-use dotenv;
 use serde::Deserialize;
 use std::{fs::File, io::Read};
 use toml;
@@ -29,9 +28,8 @@ pub struct ServerConfig {
     pub admins: Vec<String>,
 }
 
-pub fn read_config() -> Config {
-    let config_url = dotenv::var("CONFIG").unwrap_or("server.toml".to_owned());
-    let mut file = File::open(&config_url).expect("Server config file not found!\nPlease set the config in server.toml or set the CONFIG environment variable!");
+pub fn read_config(path: &str) -> Config {
+    let mut file = File::open(path).expect("Server config file not found!");
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).expect("Failed to read file!");
 

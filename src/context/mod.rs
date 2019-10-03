@@ -1,5 +1,4 @@
 use jsonld::{compact as jsonld_compact, error::CompactionError, JsonLdOptions};
-use kroeg_tap::Context;
 use serde_json::{from_slice, Value};
 
 mod loader;
@@ -42,20 +41,20 @@ pub fn apply_supplement(val: Value) -> Value {
 }
 
 /// Returns the outgoing context as used in @context, for all outgoing documents.
-pub fn outgoing_context(context: &mut Context) -> Value {
+pub fn outgoing_context(base: &str) -> Value {
     Value::Array(vec![
         Value::String("https://www.w3.org/ns/activitystreams".to_owned()),
-        Value::String(format!("{}/-/context", context.server_base)),
+        Value::String(format!("{}/-/context", base)),
     ])
 }
 
 pub async fn compact(
-    context: &mut Context<'_, '_>,
+    base: &str,
     value: &Value,
 ) -> Result<Value, CompactionError<SurfContextLoader>> {
     jsonld_compact::<SurfContextLoader>(
         value,
-        &outgoing_context(context),
+        &outgoing_context(base),
         &JsonLdOptions {
             base: None,
             compact_arrays: Some(true),

@@ -8,7 +8,7 @@ pub mod nodeinfo;
 pub mod post;
 pub mod request;
 pub mod router;
-mod store;
+pub mod store;
 pub mod webfinger;
 
 use http::StatusCode;
@@ -88,7 +88,7 @@ impl KroegService {
 pub async fn launch_delivery(config: config::Config) {
     loop {
         let db = &config.database;
-        let conn = CellarConnection::connect(&db.server, &db.database, &db.username, &db.password)
+        let conn = CellarConnection::connect(&db.server, &db.username, &db.password, &db.database)
             .await
             .unwrap();
 
@@ -132,7 +132,7 @@ impl HttpService for KroegService {
 
             let db = &ptr.0.database;
             let conn =
-                CellarConnection::connect(&db.server, &db.database, &db.username, &db.password)
+                CellarConnection::connect(&db.server, &db.username, &db.password, &db.database)
                     .await
                     .unwrap();
 
