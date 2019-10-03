@@ -4,10 +4,6 @@ version = "0.1.0"
 authors = ["Puck Meerburg <puck@puckipedia.com>"]
 edition = "2018"
 
-[[bin]]
-name = "kroeg-call"
-path = "src/bin/kroeg-call.rs"
-
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -15,7 +11,6 @@ serde_json = "1.0"
 futures-preview = "0.3.0-alpha.18"
 futures-timer = "0.3.0"
 http-service = "0.3.1"
-
 
 jsonld = { path = "../jsonld-rs" }
 kroeg-cellar = { path = "../cellar" }
