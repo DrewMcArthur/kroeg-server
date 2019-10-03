@@ -3,8 +3,8 @@ use http_service::{Body, Request, Response};
 use jsonld::nodemap::Pointer;
 use jsonld::{expand, JsonLdOptions};
 use kroeg_tap::{
-    as2, assign_ids, kroeg, ldp, untangle, Context, MessageHandler, QuadQuery, QueryId,
-    QueryObject, StoreError,
+    as2, assign_ids, kroeg, ldp, untangle, Context, DefaultAuthorizer, MessageHandler, QuadQuery,
+    QueryId, QueryObject, StoreError,
 };
 use kroeg_tap_activitypub::handlers;
 use serde_json;
@@ -345,6 +345,7 @@ impl RequestHandler for PostHandler {
 
         store_all(
             context.entity_store,
+            &DefaultAuthorizer,
             untangled.into_iter().map(|(_, v)| v).collect(),
         )
         .await

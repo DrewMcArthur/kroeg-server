@@ -1,6 +1,9 @@
 use http::Uri;
 use jsonld::{expand, JsonLdOptions};
-use kroeg_tap::{as2, untangle, CollectionPointer, EntityStore, QuadQuery, StoreError, StoreItem};
+use kroeg_tap::{
+    as2, untangle, CollectionPointer, DefaultAuthorizer, EntityStore, QuadQuery, StoreError,
+    StoreItem,
+};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -54,7 +57,12 @@ async fn retrieve_and_store(item: String, store: &mut dyn EntityStore) -> Result
     let response = do_request(&item).await?;
     let flattened = expand_and_unflatten(item, response).await?;
 
-    store_all(store, flattened.into_iter().map(|(_, a)| a).collect()).await
+    store_all(
+        store,
+        &DefaultAuthorizer,
+        flattened.into_iter().map(|(_, a)| a).collect(),
+    )
+    .await
 }
 
 #[async_trait::async_trait]

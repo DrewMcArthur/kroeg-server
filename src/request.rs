@@ -1,4 +1,4 @@
-use kroeg_tap::{kroeg, EntityStore, StoreError, StoreItem};
+use kroeg_tap::{Authorizer, EntityStore, StoreError, StoreItem};
 use serde_json::{json, Value};
 use url::Url;
 
@@ -27,13 +27,13 @@ pub async fn do_request(url: &str) -> Result<Value, StoreError> {
 
 pub async fn store_all(
     store: &mut dyn EntityStore,
+    authorizer: &impl Authorizer,
     items: Vec<StoreItem>,
 ) -> Result<(), StoreError> {
     for mut item in items {
         match store.get(item.id().to_owned(), false).await? {
-            Some(mut prev) => {
-                // Don't change items to other instance IDs.
-                if prev.meta()[kroeg!(instance)] == item.meta()[kroeg!(instance)] {
+            Some(prev) => {
+                if authorizer.can_replace(&prev, &item) {
                     store.put(item.id().to_owned(), &mut item).await?;
                 }
             }
