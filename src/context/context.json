@@ -4,6 +4,8 @@
     "NotFound": "kroeg:NotFound",
 
     "as:Public": null,
+    "sensitive": "as:sensitive",
+
     "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
     "Hashtag": "as:Hashtag",
 
