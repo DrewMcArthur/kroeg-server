@@ -14,8 +14,7 @@ pub mod webfinger;
 use http::StatusCode;
 use http_service::{Body, HttpService, Request, Response};
 use jsonld::error::{CompactionError, ExpansionError};
-use kroeg_cellar::{CellarConnection, CellarEntityStore};
-use kroeg_tap::{Context, StoreError};
+use kroeg_tap::{Context, EntityStore, QueueStore, StoreError};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -68,45 +67,52 @@ impl Error for ServerError {
     }
 }
 
+/// A store connection pool.
+pub trait StorePool: Send + Sync + 'static {
+    type LeasedConnection: LeasedConnection;
+
+    fn connect(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Self::LeasedConnection, StoreError>> + Send + 'static>>;
+}
+
+pub trait LeasedConnection: Send {
+    fn get(&mut self) -> (&mut dyn EntityStore, &mut dyn QueueStore);
+}
+
 /// The main service struct for Kroeg.
 /// For each handled request, an instance of this struct is created by the KroegServiceBuilder.
 /// This struct knows how to talk to the database, and has a list of routes.
 #[derive(Clone)]
-pub struct KroegService {
-    data: Arc<(config::Config, Vec<router::Route>)>,
-}
+pub struct KroegService<T: StorePool>(Arc<(T, config::ServerConfig, Vec<router::Route>)>);
 
-impl KroegService {
-    pub fn new(config: config::Config, routes: Vec<router::Route>) -> KroegService {
-        KroegService {
-            data: Arc::new((config, routes)),
-        }
+impl<T: StorePool> KroegService<T> {
+    pub fn new(
+        store_pool: T,
+        config: config::ServerConfig,
+        routes: Vec<router::Route>,
+    ) -> KroegService<T> {
+        KroegService(Arc::new((store_pool, config, routes)))
     }
 }
 
 /// Launches a delivery task.
-pub async fn launch_delivery(config: config::Config) {
+pub async fn launch_delivery<T: StorePool>(pool: T, config: config::ServerConfig) {
     loop {
-        let db = &config.database;
-        let conn = CellarConnection::connect(&db.server, &db.username, &db.password, &db.database)
-            .await
-            .unwrap();
+        let mut pool = pool.connect().await.unwrap();
 
-        let mut entity_store = RetrievingEntityStore::new(
-            CellarEntityStore::new(&conn),
-            config.server.base_uri.to_owned(),
-        );
-        let mut queue_store = CellarEntityStore::new(&conn);
+        let (entity_store, queue_store) = pool.get();
+        let mut entity_store = RetrievingEntityStore::new(entity_store, config.domain.to_owned());
 
         let mut context = Context {
-            server_base: config.server.base_uri.to_owned(),
-            name: config.server.name.to_owned(),
-            description: config.server.description.to_owned(),
-            instance_id: config.server.instance_id,
+            server_base: config.domain.to_owned(),
+            name: config.name.to_owned(),
+            description: config.description.to_owned(),
+            instance_id: config.instance_id,
             user: authentication::anonymous(),
 
             entity_store: &mut entity_store,
-            queue_store: &mut queue_store,
+            queue_store,
         };
 
         if let Err(e) = delivery::loop_deliver(&mut context).await {
@@ -115,7 +121,7 @@ pub async fn launch_delivery(config: config::Config) {
     }
 }
 
-impl HttpService for KroegService {
+impl<T: StorePool> HttpService for KroegService<T> {
     type Connection = ();
     type ConnectionFuture = Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>>;
     type ResponseFuture = Pin<Box<dyn Future<Output = Result<Response, std::io::Error>> + Send>>;
@@ -125,55 +131,53 @@ impl HttpService for KroegService {
     }
 
     fn respond(&self, _: &mut (), req: http_service::Request) -> Self::ResponseFuture {
-        let ptr = self.data.clone();
+        let ptr = self.0.clone();
 
         Box::pin(async move {
             let (parts, body) = req.into_parts();
+            let response = async move {
+                let mut database = ptr.0.connect().await.map_err(ServerError::StoreError)?;
 
-            let db = &ptr.0.database;
-            let conn =
-                CellarConnection::connect(&db.server, &db.username, &db.password, &db.database)
-                    .await
-                    .unwrap();
+                let (entity_store, queue_store) = database.get();
 
-            let mut entity_store = RetrievingEntityStore::new(
-                CellarEntityStore::new(&conn),
-                ptr.0.server.base_uri.to_owned(),
-            );
-            let mut queue_store = CellarEntityStore::new(&conn);
+                let mut entity_store =
+                    RetrievingEntityStore::new(entity_store, ptr.1.domain.to_owned());
 
-            let user = match authentication::user_from_request(&parts, &mut entity_store).await {
-                Ok(user) => user,
-                Err(e) => {
-                    println!(" - err setting up request: {:?}", e);
+                let user = match authentication::user_from_request(&parts, &mut entity_store).await
+                {
+                    Ok(user) => user,
+                    Err(e) => {
+                        println!(" - err setting up request: {:?}", e);
 
-                    return Ok(http::Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Body::from(e.to_string()))
-                        .unwrap());
+                        return Ok(http::Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Body::from(e.to_string()))
+                            .unwrap());
+                    }
+                };
+
+                println!(" - {} {} ({:?})", parts.method, parts.uri, user.subject);
+
+                let mut context = Context {
+                    server_base: ptr.1.domain.to_owned(),
+                    name: ptr.1.name.to_owned(),
+                    description: ptr.1.description.to_owned(),
+                    instance_id: ptr.1.instance_id,
+                    entity_store: &mut entity_store,
+                    queue_store,
+                    user,
+                };
+
+                if let Some(route) = ptr.2.iter().rev().find(|f| f.can_handle(&parts)) {
+                    route
+                        .handler
+                        .run(&mut context, Request::from_parts(parts, body))
+                        .await
+                } else {
+                    router::not_found(&mut context, Request::from_parts(parts, body)).await
                 }
-            };
-
-            println!(" - {} {} ({:?})", parts.method, parts.uri, user.subject);
-
-            let mut context = Context {
-                server_base: ptr.0.server.base_uri.to_owned(),
-                name: ptr.0.server.name.to_owned(),
-                description: ptr.0.server.description.to_owned(),
-                instance_id: ptr.0.server.instance_id,
-                entity_store: &mut entity_store,
-                queue_store: &mut queue_store,
-                user,
-            };
-
-            let response = if let Some(route) = ptr.1.iter().rev().find(|f| f.can_handle(&parts)) {
-                route
-                    .handler
-                    .run(&mut context, Request::from_parts(parts, body))
-                    .await
-            } else {
-                router::not_found(&mut context, Request::from_parts(parts, body)).await
-            };
+            }
+                .await;
 
             match response {
                 Ok(response) => {
