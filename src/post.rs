@@ -207,6 +207,8 @@ fn get_handler(box_type: &str) -> Option<(Vec<Box<dyn MessageHandler>>, Delivery
             vec![
                 Box::new(handlers::VerifyRequiredEventsHandler(false)),
                 Box::new(handlers::ServerCreateHandler),
+                Box::new(handlers::ServerLikeHandler),
+                Box::new(handlers::ServerFollowHandler),
             ],
             DeliveryMode::None,
             TrustMode::TrustIDs,
