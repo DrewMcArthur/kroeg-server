@@ -78,6 +78,25 @@ impl Route {
             return false;
         }
 
+        if !self.content_type.is_empty() {
+            let mut matches_content = false;
+            let items = request
+                .headers
+                .get("Accept")
+                .map(|v| v.to_str().unwrap_or(""))
+                .unwrap_or("")
+                .split(',');
+            for item in items {
+                if self.content_type.iter().any(|f| f == item) {
+                    matches_content = true;
+                }
+            }
+
+            if !matches_content {
+                return false;
+            }
+        }
+
         let uri = &request.uri;
         if self.is_prefix {
             uri.path().starts_with(&self.path)
