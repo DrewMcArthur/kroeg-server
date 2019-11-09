@@ -2,9 +2,10 @@
 
 use http_service::{Body, Request, Response};
 use jsonld::nodemap::Pointer;
-use kroeg_tap::{as2, assemble, Authorizer, Context, DefaultAuthorizer, StoreItem};
+use kroeg_tap::{as2, assemble, Authorizer, Context, DefaultAuthorizer, StoreError, StoreItem};
 use serde_json::json;
 use std::collections::HashSet;
+use url::Url;
 
 use crate::ServerError;
 
@@ -12,7 +13,7 @@ async fn build_collection_page(
     context: &mut Context<'_, '_>,
     item: StoreItem,
     query: String,
-) -> Result<StoreItem, ServerError> {
+) -> Result<StoreItem, StoreError> {
     let cursor = if query == "first" {
         None
     } else {
@@ -22,8 +23,7 @@ async fn build_collection_page(
     let page = context
         .entity_store
         .read_collection(item.id().to_owned(), None, cursor)
-        .await
-        .map_err(ServerError::StoreError)?;
+        .await?;
 
     let full_id = format!("{}?{}", item.id(), query);
     let items: Vec<_> = page
@@ -65,6 +65,47 @@ fn not_found() -> Response {
         .unwrap()
 }
 
+pub async fn get_raw(
+    context: &mut Context<'_, '_>,
+    url: &str,
+) -> Result<Option<StoreItem>, StoreError> {
+    let parsed = match Url::parse(url) {
+        Ok(url) => url,
+        Err(_) => return Ok(None),
+    };
+
+    let id = parsed[..url::Position::BeforeQuery].trim_end_matches('?');
+
+    let mut item = match context.entity_store.get(id.to_owned(), false).await? {
+        Some(item)
+            if DefaultAuthorizer
+                .can_show(context, &item)
+                .await
+                .map_err(ServerError::StoreError)? =>
+        {
+            item
+        }
+        _ => return Ok(None),
+    };
+
+    if item.is_owned(context)
+        && item
+            .main()
+            .types
+            .iter()
+            .any(|f| f == as2!(OrderedCollection))
+    {
+        if let Some(query) = parsed.query() {
+            item = build_collection_page(context, item, query.to_owned()).await?;
+        } else {
+            let id = format!("{}?first", item.id());
+            item.main_mut()[as2!(first)].push(Pointer::Id(id));
+        }
+    }
+
+    Ok(Some(item))
+}
+
 pub struct GetHandler;
 
 #[async_trait::async_trait]
@@ -74,40 +115,15 @@ impl crate::router::RequestHandler for GetHandler {
         context: &mut Context<'_, '_>,
         request: Request,
     ) -> Result<Response, ServerError> {
-        let id = format!("{}{}", context.server_base, request.uri().path());
-        let query = request.uri().query().map(str::to_string);
+        let id = format!("{}{}", context.server_base, request.uri());
 
-        let mut item = match context
-            .entity_store
-            .get(id, false)
+        let item = match get_raw(context, &id)
             .await
             .map_err(ServerError::StoreError)?
         {
-            Some(item)
-                if DefaultAuthorizer
-                    .can_show(context, &item)
-                    .await
-                    .map_err(ServerError::StoreError)? =>
-            {
-                item
-            }
-            _ => return Ok(not_found()),
+            Some(item) => item,
+            None => return Ok(not_found()),
         };
-
-        if item.is_owned(context)
-            && item
-                .main()
-                .types
-                .iter()
-                .any(|f| f == as2!(OrderedCollection))
-        {
-            if let Some(query) = query {
-                item = build_collection_page(context, item, query).await?;
-            } else {
-                let id = format!("{}?first", item.id());
-                item.main_mut()[as2!(first)].push(Pointer::Id(id));
-            }
-        }
 
         let assembled = assemble(&item, 0, context, &DefaultAuthorizer, &mut HashSet::new())
             .await
