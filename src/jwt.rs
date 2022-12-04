@@ -30,7 +30,7 @@ pub async fn verify(
     store: &mut dyn EntityStore,
     token: String,
 ) -> Result<Option<User>, StoreError> {
-    let mut spl: Vec<_> = token.split('.').map(str::to_owned).collect();
+    let spl: Vec<_> = token.split('.').map(str::to_owned).collect();
     if spl.len() != 3 {
         return Ok(None);
     }
