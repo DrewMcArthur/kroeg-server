@@ -6,7 +6,7 @@ use kroeg_tap::{
     as2, assign_ids, kroeg, ldp, untangle, Context, DefaultAuthorizer, MessageHandler, QuadQuery,
     QueryId, QueryObject, StoreError,
 };
-use kroeg_tab_activitypub::handlers;
+use kroeg_tap_activitypub::handlers;
 use serde_json;
 use std::collections::HashSet;
 
